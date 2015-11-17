@@ -1,7 +1,6 @@
 #include <Wire.h>
 #include <SPI.h>
-#include <WildFire.h>
-#include <WildFire_CC3000.h>
+#include <ESP8266_AT_Client.h>
 #include <SdFat.h>
 #include <RTClib.h>
 #include <RTC_DS3231.h>
@@ -29,8 +28,10 @@
 // the last page is reserved for use by the bootloader
 #define SECOND_TO_LAST_4K_PAGE_ADDRESS      0x7E000     
 
-WildFire wf;
-WildFire_CC3000 cc3000;
+int esp8266_enable_pin = 23; // Arduino digital the pin that is used to reset/enable the ESP8266 module
+Stream * at_command_interface = &Serial1;  // Serial1 is the 'stream' the AT command interface is on
+ESP8266_AT_Client esp(esp8266_enable_pin, at_command_interface); // instantiate the client object
+
 TinyWatchdog tinywdt;
 LMP91000 lmp91000;
 MCP342x adc;
@@ -42,13 +43,12 @@ char g_lcd_buffer[2][17] = {0}; // 2 rows of 16 characters each, with space for 
 byte mqtt_server_ip[4] = { 0 };    
 PubSubClient mqtt_client;
 char mqtt_client_id[32] = {0};
-WildFire_CC3000_Client wifiClient;
-WildFire_CC3000_Client ntpClient;
+
 RTC_DS3231 rtc;
 SdFat SD;
 
 TinyGPS gps;
-Stream * gpsSerial = &Serial1;   // TODO: This will need to be solved if we allocate Serial1 to anything else in the future
+Stream * gpsSerial = NULL; // &Serial1;   // TODO: This will need to be solved if we allocate Serial1 to anything else in the future
 #define GPS_MQTT_STRING_LENGTH (128)
 #define GPS_CSV_STRING_LENGTH (64)
 char gps_mqtt_string[GPS_MQTT_STRING_LENGTH] = {0};
@@ -109,7 +109,7 @@ boolean init_no2_afe_ok = false;
 boolean init_co_adc_ok = false;
 boolean init_no2_adc_ok = false;
 boolean init_spi_flash_ok = false;
-boolean init_cc3000_ok = false;
+boolean init_esp8266_ok = false;
 boolean init_sdcard_ok = false;
 boolean init_rtc_ok = false;
 
@@ -140,7 +140,7 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_CONNECT_METHOD     (EEPROM_MAC_ADDRESS - 1)        // connection method encoded as a single byte value 
 #define EEPROM_SSID               (EEPROM_CONNECT_METHOD - 32)    // ssid string, up to 32 characters (one of which is a null terminator)
 #define EEPROM_NETWORK_PWD        (EEPROM_SSID - 32)              // network password, up to 32 characters (one of which is a null terminator)
-#define EEPROM_SECURITY_MODE      (EEPROM_NETWORK_PWD - 1)        // security mode encoded as a single byte value, consistent with the CC3000 library
+#define EEPROM_SECURITY_MODE      (EEPROM_NETWORK_PWD - 1)        // security mode encoded as a single byte value
 #define EEPROM_STATIC_IP_ADDRESS  (EEPROM_SECURITY_MODE - 4)      // static ipv4 address, 4 bytes - 0.0.0.0 indicates use DHCP
 #define EEPROM_STATIC_NETMASK     (EEPROM_STATIC_IP_ADDRESS - 4)  // static netmask, 4 bytes
 #define EEPROM_STATIC_GATEWAY     (EEPROM_STATIC_NETMASK - 4)     // static default gateway ip address, 4 bytes
@@ -395,7 +395,11 @@ const uint8_t heartbeat_waveform[NUM_HEARTBEAT_WAVEFORM_SAMPLES] PROGMEM = {
 };
 uint8_t heartbeat_waveform_index = 0;
 
-char scratch[1024] = { 0 };  // scratch buffer, for general use
+char scratch[512] = { 0 };  // scratch buffer, for general use
+#define ESP8266_INPUT_BUFFER_SIZE (1500)
+uint8_t esp8266_input_buffer[ESP8266_INPUT_BUFFER_SIZE] = {0};     // sketch must instantiate a buffer to hold incoming data
+                                                                   // 1500 bytes is way overkill for MQTT, but if you have it, may as well
+                                                                   // make space for a whole TCP packet
 char converted_value_string[64] = {0};
 char compensated_value_string[64] = {0};
 char raw_value_string[64] = {0};
@@ -708,8 +712,8 @@ void setup() {
   if(shutdown_wifi){
     // it's a mode that doesn't require Wi-Fi
     // save settings as necessary
-    commitConfigToMirroredConfig();
-    cc3000.stop(); // save power!
+    commitConfigToMirroredConfig();    
+    esp.sleep(2); // deep sleep    
   }
   
   // get the temperature units
@@ -733,8 +737,10 @@ void setup() {
 void loop() {
   current_millis = millis();
 
+  //TODO: use SoftwareSerial for GPS
   // whenever you come through loop, process a GPS byte if there is one
-  // will need to test if this keeps up, but I think it will
+  // will need to test if this keeps up, but I think it will    
+  /*
   if(gpsSerial->available()){    
     if(gps.encode(gpsSerial->read())){    
       gps.f_get_position(&gps_latitude, &gps_longitude, &gps_age);
@@ -742,6 +748,7 @@ void loop() {
       updateGpsStrings();
     }
   }
+  */
 
   if(current_millis - previous_sensor_sampling_millis >= sampling_interval){
     previous_sensor_sampling_millis = current_millis;    
@@ -799,11 +806,8 @@ void init_firmware_version(void){
 }
 
 void initializeHardware(void) {
-  wf.begin();
   Serial.begin(115200);
-
-  // gps serial is 9600 baud
-  Serial1.begin(9600); // remember must be consistent with global gpsSerial defintion
+  Serial1.begin(115200); 
 
   init_firmware_version();
   
@@ -1011,17 +1015,19 @@ void initializeHardware(void) {
   selectNoSlot();
 
   uint8_t connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
-  Serial.print(F("Info: CC3000 Initialization..."));  
+  Serial.print(F("Info: ESP8266 Initialization..."));  
   SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
   petWatchdog();
-    
-  if (cc3000.begin()) {
+
+  esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up
+  if (esp.reset()) {
+    esp.setNetworkMode(1);
     Serial.println(F("OK."));
-    init_cc3000_ok = true;
+    init_esp8266_ok = true;
   }
   else {
     Serial.println(F("Failed."));
-    init_cc3000_ok = false;
+    init_esp8266_ok = false;
   }
   
   updateLCD("NO2 / CO", 0);
@@ -1381,7 +1387,7 @@ void help_menu(char * arg) {
       Serial.println(F("get <param>"));
       get_help_indent(); Serial.println(F("<param> is one of:"));
       get_help_indent(); Serial.println(F("settings - displays all viewable settings"));
-      get_help_indent(); Serial.println(F("mac - the MAC address of the cc3000"));
+      get_help_indent(); Serial.println(F("mac - the MAC address of the ESP8266"));
       get_help_indent(); Serial.println(F("method - the Wi-Fi connection method"));
       get_help_indent(); Serial.println(F("ssid - the Wi-Fi SSID to connect to"));
       get_help_indent(); Serial.println(F("pwd - lol, sorry, that's not happening!"));
@@ -1421,7 +1427,7 @@ void help_menu(char * arg) {
       Serial.println(F("init <param>"));
       get_help_indent(); Serial.println(F("<param> is one of:"));
       get_help_indent(); Serial.println(F("mac         - retrieves the mac address from"));
-      get_help_indent(); Serial.println(F("                 the CC3000 and stores it in EEPROM"));
+      get_help_indent(); Serial.println(F("                 the ESP8266 and stores it in EEPROM"));
     }
     else if (strncmp("restore", arg, 7) == 0) {
       Serial.println(F("restore <param>"));
@@ -1457,8 +1463,7 @@ void help_menu(char * arg) {
       defaults_help_indent(); Serial.println(F("restore co"));          
       defaults_help_indent(); Serial.println(F("clears the SSID from memory"));
       defaults_help_indent(); Serial.println(F("clears the Network Password from memory"));
-      get_help_indent(); Serial.println(F("mac        - retrieves the mac address from BACKUP"));
-      get_help_indent(); Serial.println(F("             and assigns it to the CC3000, via a 'mac' command"));
+      get_help_indent(); Serial.println(F("mac        - retrieves the mac address from BACKUP"));    
       get_help_indent(); Serial.println(F("mqttpwd    - restores the MQTT password from BACKUP "));
       get_help_indent(); Serial.println(F("mqttid     - restores the MQTT client ID"));    
       get_help_indent(); Serial.println(F("updatesrv  - restores the Update server name"));          
@@ -1473,8 +1478,6 @@ void help_menu(char * arg) {
       Serial.println(F("mac <address>"));
       get_help_indent(); Serial.println(F("<address> is a MAC address of the form:"));
       get_help_indent(); Serial.println(F("             08:ab:73:DA:8f:00"));
-      get_help_indent(); Serial.println(F("result:  The entered MAC address is assigned to the CC3000"));
-      get_help_indent(); Serial.println(F("         and is stored in the EEPROM."));
       warn_could_break_connect();
     }
     else if (strncmp("method", arg, 6) == 0) {
@@ -1511,7 +1514,7 @@ void help_menu(char * arg) {
       get_help_indent(); Serial.println(F("<param2> netmask, e.g. 255.255.255.0"));      
       get_help_indent(); Serial.println(F("<param3> default gateway ip address, e.g. 192.168.1.1"));      
       get_help_indent(); Serial.println(F("<param4> dns server ip address, e.g. 8.8.8.8"));      
-      get_help_indent(); Serial.println(F("result: The entered static network parameters will be used by the CC3000"));
+      get_help_indent(); Serial.println(F("result: The entered static network parameters will be used by the ESP8266"));
       get_help_indent(); Serial.println(F("note:   To configure DHCP use command 'use dhcp'"));
       warn_could_break_connect();      
     }
@@ -1621,7 +1624,7 @@ void help_menu(char * arg) {
       Serial.println(F("backup <param>"));
       get_help_indent(); Serial.println(F("<param> is one of:"));
       get_help_indent(); Serial.println(F("mqttpwd  - backs up the MQTT password"));
-      get_help_indent(); Serial.println(F("mac      - backs up the CC3000 MAC address"));
+      get_help_indent(); Serial.println(F("mac      - backs up the ESP8266 MAC address"));
       get_help_indent(); Serial.println(F("key      - backs up the 256-bit private key"));
       get_help_indent(); Serial.println(F("no2      - backs up the NO2 calibration parameters"));
       get_help_indent(); Serial.println(F("co       - backs up the CO calibration parameters"));
@@ -1787,16 +1790,16 @@ void print_eeprom_ssid(void) {
 void print_eeprom_security_type(void) {
   uint8_t security = eeprom_read_byte((const uint8_t *) EEPROM_SECURITY_MODE);
   switch (security) {
-    case WLAN_SEC_UNSEC:
+    case 0:
       Serial.println(F("Open"));
       break;
-    case WLAN_SEC_WEP:
+    case 1:
       Serial.println(F("WEP"));
       break;
-    case WLAN_SEC_WPA:
+    case 2:
       Serial.println(F("WPA"));
       break;
-    case WLAN_SEC_WPA2:
+    case 3:
       Serial.println(F("WPA2"));
       break;
     case WLAN_SEC_AUTO:
@@ -2224,8 +2227,6 @@ void print_eeprom_value(char * arg) {
   }
 }
 
-// goes into the CC3000 and stores the
-// MAC address from it in the EEPROM
 void initialize_eeprom_value(char * arg) {
   if(!configMemoryUnlocked(__LINE__)){
     return;
@@ -2233,8 +2234,8 @@ void initialize_eeprom_value(char * arg) {
 
   if (strncmp(arg, "mac", 3) == 0) {
     uint8_t _mac_address[6];
-    if (!cc3000.getMacAddress(_mac_address)) {
-      Serial.println(F("Error: Could not retrieve MAC address from CC3000"));
+    if (!esp.getMacAddress((uint8_t *) _mac_address)) {
+      Serial.println(F("Error: Could not retrieve MAC address from ESP8266"));
     }
     else {
       eeprom_write_block(_mac_address, (void *) EEPROM_MAC_ADDRESS, 6);
@@ -2774,13 +2775,8 @@ void set_mac_address(char * arg) {
   }
 
   if (num_tokens == 6) {
-    if (!cc3000.setMacAddress(_mac_address)) {
-      Serial.println(F("Error: Failed to write MAC address to CC3000"));
-    }
-    else { // cc3000 mac address accepted
-      eeprom_write_block(_mac_address, (void *) EEPROM_MAC_ADDRESS, 6);
-      recomputeAndStoreConfigChecksum();
-    }
+    eeprom_write_block(_mac_address, (void *) EEPROM_MAC_ADDRESS, 6);
+    recomputeAndStoreConfigChecksum();    
   }
   else {
     Serial.println(F("Error: MAC address must contain 6 bytes, with each separated by ':'"));
@@ -2796,13 +2792,6 @@ void set_connection_method(char * arg) {
   boolean valid = true;
   if (strncmp(arg, "direct", 6) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_CONNECT_METHOD, CONNECT_METHOD_DIRECT);
-    Serial.print(F("Info: Deleteing stored profiles..."));
-    if(cc3000.deleteProfiles()){
-      Serial.println(F("OK.")); 
-    }
-    else{
-      Serial.println(F("Failed.")); 
-    }
   }
   else {
     Serial.print(F("Error: Invalid connection method entered - \""));
@@ -2811,7 +2800,7 @@ void set_connection_method(char * arg) {
     Serial.println(F("       valid options are: 'direct'"));
     valid = false;
   }
-
+  
   if (valid) {
     recomputeAndStoreConfigChecksum();
   }
@@ -2862,16 +2851,16 @@ void set_network_security_mode(char * arg) {
   
   boolean valid = true;
   if (strncmp("open", arg, 4) == 0) {
-    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, WLAN_SEC_UNSEC);
+    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 0);
   }
   else if (strncmp("wep", arg, 3) == 0) {
-    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, WLAN_SEC_WEP);
+    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 1);
   }
   else if (strncmp("wpa2", arg, 4) == 0) {
-    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, WLAN_SEC_WPA2);
+    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 2);
   }
   else if (strncmp("wpa", arg, 3) == 0) {
-    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, WLAN_SEC_WPA);
+    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 3);
   }
   else if(strncmp("auto", arg, 4) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, WLAN_SEC_AUTO);
@@ -3034,28 +3023,15 @@ void set_static_ip_address(char * arg) {
 
   // if we got this far, it means we got 4 valid IP addresses, and they
   // are stored in their respective local variables    
-  uint32_t ipAddress = cc3000.IP2U32(_ip_address[0], _ip_address[1], _ip_address[2], _ip_address[3]);
-  uint32_t netMask = cc3000.IP2U32(_netmask[0], _netmask[1], _netmask[2], _netmask[3]);
-  uint32_t defaultGateway = cc3000.IP2U32(_gateway_ip[0], _gateway_ip[1], _gateway_ip[2], _gateway_ip[3]);
-  uint32_t dns = cc3000.IP2U32(_dns_ip[0], _dns_ip[1], _dns_ip[2], _dns_ip[3]);  
+  uint32_t ipAddress = esp.IpArrayToIpUint32((uint8_t *) _ip_address);
+  uint32_t netMask = esp.IpArrayToIpUint32((uint8_t *) _netmask);
+  uint32_t defaultGateway = esp.IpArrayToIpUint32((uint8_t *) _gateway_ip);  
   
-  //   Note that the setStaticIPAddress function will save its state
-  //   in the CC3000's internal non-volatile memory and the details
-  //   will be used the next time the CC3000 connects to a network.
-  //   This means you only need to call the function once and the
-  //   CC3000 will remember the connection details.   
-  
-  if (!cc3000.setStaticIPAddress(ipAddress, netMask, defaultGateway, dns)) {
-    Serial.println(F("Error: setStaticIPAddress Failed on CC3000"));
-    return;          
-  }  
-  else{
-    eeprom_write_block(_ip_address, (void *) EEPROM_STATIC_IP_ADDRESS, 4);  
-    eeprom_write_block(_netmask, (void *) EEPROM_STATIC_NETMASK, 4);
-    eeprom_write_block(_gateway_ip, (void *) EEPROM_STATIC_GATEWAY, 4);
-    eeprom_write_block(_dns_ip, (void *) EEPROM_STATIC_DNS, 4);
-    recomputeAndStoreConfigChecksum();
-  }
+  eeprom_write_block(_ip_address, (void *) EEPROM_STATIC_IP_ADDRESS, 4);  
+  eeprom_write_block(_netmask, (void *) EEPROM_STATIC_NETMASK, 4);
+  eeprom_write_block(_gateway_ip, (void *) EEPROM_STATIC_GATEWAY, 4);
+  //eeprom_write_block(_dns_ip, (void *) EEPROM_STATIC_DNS, 4);
+  recomputeAndStoreConfigChecksum();  
 }
 
 void use_command(char * arg) {
@@ -3064,17 +3040,9 @@ void use_command(char * arg) {
   }
   
   const uint8_t noip[4] = {0};
-  if (strncmp("dhcp", arg, 4) == 0) {
-    //  To switch back to using DHCP, call the setDHCP() function 
-    //  Like setStaticIp, only needs to be called once.
-    if (!cc3000.setDHCP()){
-      Serial.println(F("Error: setDCHP Failed on CC3000"));
-      return;      
-    }
-    else{
-      eeprom_write_block(noip, (void *) EEPROM_STATIC_IP_ADDRESS, 4);
-      recomputeAndStoreConfigChecksum();
-    }
+  if (strncmp("dhcp", arg, 4) == 0) {    
+    eeprom_write_block(noip, (void *) EEPROM_STATIC_IP_ADDRESS, 4);
+    recomputeAndStoreConfigChecksum();  
   }
   else if (strncmp("ntp", arg, 3) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_USE_NTP, 1);
@@ -3528,7 +3496,7 @@ void backup(char * arg) {
   uint16_t backup_check = eeprom_read_word((const uint16_t *) EEPROM_BACKUP_CHECK);
 
   if (strncmp("mac", arg, 3) == 0) {
-    configInject("init mac\r"); // make sure the CC3000 mac address is in EEPROM
+    configInject("init mac\r"); // make sure the ESP8266 mac address is in EEPROM
     Serial.println();
     eeprom_read_block(tmp, (const void *) EEPROM_MAC_ADDRESS, 6);
     eeprom_write_block(tmp, (void *) EEPROM_BACKUP_MAC_ADDRESS, 6);
@@ -4270,67 +4238,61 @@ void updateLcdProgressDots(void){
 }
 
 /****** WIFI SUPPORT FUNCTIONS ******/
-void displayRSSI(void){
-  char ssid[32] = {0};
-  uint32_t index;
-  uint8_t valid, rssi, sec;
-  uint8_t max_rssi = 0;
+void displayRSSI(void){ 
+  char ssid[33] = {0};
+  static ap_scan_result_t results[10] = {0};    
+  int8_t max_rssi = -256;
   boolean found_ssid = false;
-  uint8_t target_network_secMode = 0;
-  char ssidname[33]; 
+  uint8_t target_network_secMode = 0;  
   uint8_t network_security_mode = eeprom_read_byte((const uint8_t *) EEPROM_SECURITY_MODE);   
-  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 31);
+  uint8_t num_results_found = 0;  
+  
+  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 32);
   
   setLCD_P(PSTR(" SCANNING WI-FI "
                 "                "));
   Serial.println(F("Info: Beginning Network Scan..."));                
   SUCCESS_MESSAGE_DELAY();
-  if (!cc3000.startSSIDscan(&index)) {
-    Serial.println(F("Error: Network Scan Failed"));
-    return;
-  }
-  
-  Serial.print(F("Info: Network Scan found "));
-  Serial.print(index);
-  Serial.println(F(" networks"));
-  
-  while (index) {
-    index--;
 
-    valid = cc3000.getNextSSID(&rssi, &sec, ssidname);
-    if(strncmp(ssidname, ssid, 16) == 0){      
-      Serial.print(F("Info: Found Access Point \""));
-      Serial.print(ssid);
-      Serial.print(F("\", "));
-      Serial.print(F("RSSI = "));
-      Serial.println(rssi);
-      found_ssid = true;
-      if(rssi > max_rssi){
-        max_rssi = rssi; 
-        target_network_secMode = sec;
-      }
-    }
-  }
-  
-  cc3000.stopSSIDscan();
-  
+  if(esp.scanAccessPoints((ap_scan_result_t *) &(results[0]), 10, &num_results_found)){
+    Serial.print(F("Info: Network Scan found "));
+    Serial.print(num_results_found);
+    Serial.println(F(" networks"));    
+    for(uint8_t ii = 0; ii < num_results_found; ii++){
+      if(strncmp((char *)&(results[ii].ssid[0]), ssid, 32) == 0){      
+        int8_t rssi = results[ii].rssi;
+        uint8_t sec = results[ii].security;        
+        Serial.print(F("Info: Found Access Point \""));
+        Serial.print(ssid);
+        Serial.print(F("\", "));
+        Serial.print(F("RSSI = "));
+        Serial.println(rssi);
+        found_ssid = true;
+        if(rssi > max_rssi){
+          max_rssi = rssi; 
+          target_network_secMode = sec;
+        }
+      }      
+    }    
+  }  
+ 
   if(found_ssid){
-    int8_t rssi_dbm = max_rssi - 128;
+    int8_t rssi_dbm = max_rssi;
     lcdBars(rssi_to_bars(rssi_dbm));
     lcdSmiley(15, 1); // lower right corner
     
     if(network_security_mode == WLAN_SEC_AUTO){
       allowed_to_write_config_eeprom = true;
-      if(target_network_secMode == WLAN_SEC_UNSEC){
+      if(target_network_secMode == 0){
         set_network_security_mode("open");
       }
-      else if(target_network_secMode == WLAN_SEC_WEP){
+      else if(target_network_secMode == 1){
         set_network_security_mode("wep");
       }
-      else if(target_network_secMode == WLAN_SEC_WPA){
+      else if(target_network_secMode == 2){
         set_network_security_mode("wpa");
       }
-      else if(target_network_secMode == WLAN_SEC_WPA2){
+      else if((target_network_secMode == 3) || (target_network_secMode == 4)){
         set_network_security_mode("wpa2");
       }
       allowed_to_write_config_eeprom = false;      
@@ -4369,11 +4331,11 @@ uint8_t rssi_to_bars(int8_t rssi_dbm){
   return num_bars;
 }
 
-boolean restartWifi(){    
+boolean restartWifi(){     
   if(!connectedToNetwork()){        
     delayForWatchdog();
     petWatchdog();
-    current_millis = millis();
+    current_millis = millis();   
     reconnectToAccessPoint();
     current_millis = millis();
     delayForWatchdog();
@@ -4383,11 +4345,6 @@ boolean restartWifi(){
     delayForWatchdog();
     petWatchdog();    
     displayConnectionDetails();
-
-    // if (!mdns.begin("airqualityegg", cc3000)) {
-    //   Serial.println(F("Error setting up MDNS responder!"));
-    //   while(1);     
-    // }    
     
     clearLCD();
   }
@@ -4396,20 +4353,34 @@ boolean restartWifi(){
 }
 
 bool displayConnectionDetails(void){
-  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
-  
-  if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
+  uint32_t ipAddress, netmask, gateway;
+ 
+  if(!esp.getIPAddress(&ipAddress, &netmask, &gateway))
   {
     Serial.println(F("Error: Unable to retrieve the IP Address!"));
     return false;
   }
   else
   {
-    Serial.print(F("Info: IP Addr: ")); cc3000.printIPdotsRev(ipAddress); Serial.println();
-    Serial.print(F("Info: Netmask: ")); cc3000.printIPdotsRev(netmask); Serial.println();
-    Serial.print(F("Info: Gateway: ")); cc3000.printIPdotsRev(gateway); Serial.println();
-    Serial.print(F("Info: DHCPsrv: ")); cc3000.printIPdotsRev(dhcpserv); Serial.println();
-    Serial.print(F("Info: DNSserv: ")); cc3000.printIPdotsRev(dnsserv); Serial.println();
+    char ip_str[16] = {0};
+    
+    Serial.print(F("Info: IP Addr: ")); 
+    memset(ip_str, 0, 16);
+    esp.IpUint32ToString(ipAddress, &(ip_str[0])); 
+    Serial.print((char *) ip_str);
+    Serial.println();
+    
+    Serial.print(F("Info: Netmask: ")); 
+    memset(ip_str, 0, 16);
+    esp.IpUint32ToString(netmask, &(ip_str[0])); 
+    Serial.print((char *) ip_str);
+    Serial.println();
+    
+    Serial.print(F("Info: Gateway: ")); 
+    memset(ip_str, 0, 16);
+    esp.IpUint32ToString(gateway, &(ip_str[0])); 
+    Serial.print((char *) ip_str);
+    Serial.println();    
     
     updateLCD(ipAddress, 1);
     lcdSmiley(15, 1); // lower right corner
@@ -4425,13 +4396,21 @@ void reconnectToAccessPoint(void){
   static uint8_t connect_method = 0;
   static uint8_t network_security_mode = 0;
   static boolean first_access = true;
-  
+  static uint8_t mac_address[6] = {0};
   if(first_access){
     first_access = false;
     connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
     network_security_mode = eeprom_read_byte((const uint8_t *) EEPROM_SECURITY_MODE);  
     eeprom_read_block(ssid, (const void *) EEPROM_SSID, 31);
     eeprom_read_block(network_password, (const void *) EEPROM_NETWORK_PWD, 31); 
+    eeprom_read_block(mac_address, (const void *) EEPROM_MAC_ADDRESS, 6);
+  }
+
+  esp.reset();
+  esp.setNetworkMode(1);
+
+  if (!esp.setMacAddress(mac_address)) {
+    Serial.println(F("Error: Failed to write MAC address to ESP8266"));
   }
   
   switch(connect_method){
@@ -4443,7 +4422,8 @@ void reconnectToAccessPoint(void){
       updateLCD(ssid, 1);
       delayForWatchdog();
       petWatchdog();
-      if(!cc3000.connectToAP(ssid, network_password, network_security_mode)) {
+      
+      if(!esp.connectToNetwork((char *) ssid, (char *) network_password)){
         Serial.print(F("Error: Failed to connect to Access Point with SSID: "));
         Serial.println(ssid);
         Serial.flush();
@@ -4452,6 +4432,10 @@ void reconnectToAccessPoint(void){
         ERROR_MESSAGE_DELAY();
         watchdogForceReset();
       }
+
+      // if your configured for static ip address then setStaticIP
+      // otherwise setDHCP
+      
       Serial.println(F("OK."));
       updateLCD("CONNECTED", 1);
       lcdSmiley(15, 1);
@@ -4464,17 +4448,26 @@ void reconnectToAccessPoint(void){
 }
 
 void acquireIpAddress(void){
-  static boolean first_access = true;
-  static uint8_t static_ip_address[4] = {0};
+  static boolean first_access = true;  
+  static uint32_t static_ip = 0;
+  static uint32_t static_gateway = 0;
+  static uint32_t static_netmask = 0;
+  
   uint8_t noip[4] = {0};
 
   if(first_access){
+    uint8_t ip[4] = {0};
     first_access = false;
-    eeprom_read_block(static_ip_address, (const void *) EEPROM_STATIC_IP_ADDRESS, 4);
+    eeprom_read_block(ip, (const void *) EEPROM_STATIC_IP_ADDRESS, 4);
+    static_ip = esp.IpArrayToIpUint32((uint8_t *) &(ip[0]));
+    eeprom_read_block(ip, (const void *) EEPROM_STATIC_NETMASK, 4);
+    static_netmask = esp.IpArrayToIpUint32((uint8_t *) &(ip[0]));
+    eeprom_read_block(ip, (const void *) EEPROM_STATIC_GATEWAY, 4);
+    static_gateway = esp.IpArrayToIpUint32((uint8_t *) &(ip[0]));
   }
   
   // if it's DHCP we're configured for, engage DHCP process
-  if (memcmp(static_ip_address, noip, 4) == 0){
+  if (static_ip == 0){
     /* Wait for DHCP to complete */
     Serial.print(F("Info: Request DHCP..."));
     setLCD_P(PSTR(" REQUESTING IP  "));   
@@ -4482,54 +4475,41 @@ void acquireIpAddress(void){
     const long dhcp_timeout_duration_ms = 60000L;
     unsigned long previous_dhcp_timeout_millis = current_millis;
     uint32_t ii = 0;
-    while (!cc3000.checkDHCP()){      
-      // if this goes on for longer than a minute, 
-      // tiny watchdog should automatically kick in
-      // and reset the unit. If we don't want that to happen
-      // we would need to pet the tiny watchdog every so often
-      // in this loop.
-      
-      current_millis = millis();
-      if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
-        previous_touch_sampling_millis = current_millis;    
-        collectTouch();    
-        processTouchQuietly();  
-        ii++;
-        if((ii % 5) == 0){    
-          petWatchdog();
-        }        
-      }      
-
-      if(current_millis - previous_progress_dots_millis >= progress_dots_interval){
-        previous_progress_dots_millis = current_millis;
-        updateLcdProgressDots();
-      }     
-     
-      if(current_millis - previous_dhcp_timeout_millis >= dhcp_timeout_duration_ms){
-        Serial.println(F("Error: Failed to acquire IP address via DHCP. Rebooting."));
-        Serial.flush();
-        updateLCD("FAILED", 1);
-        lcdFrownie(15, 1);
-        ERROR_MESSAGE_DELAY();    
-        watchdogForceReset();
-      }      
-    }   
-    Serial.println(F("OK.")); 
+    if(esp.setDHCP()){
+      Serial.println(F("OK.")); 
+    }
+    else{
+      Serial.println(F("Error: Failed to acquire IP address via DHCP. Rebooting."));
+      Serial.flush();
+      updateLCD("FAILED", 1);
+      lcdFrownie(15, 1);
+      ERROR_MESSAGE_DELAY();    
+      watchdogForceReset();
+    }
+  }
+  else{
+    Serial.print(F("Info: Setting Static IP configuration..."));
+    if(!esp.setStaticIPAddress(static_ip, static_netmask, static_gateway, 0)){
+      Serial.println(F("Failed.")); 
+    }
+    else{
+      Serial.println(F("OK.")); 
+    }
   }
 }
 
 boolean connectedToNetwork(void){
-  return (cc3000.getStatus() == STATUS_CONNECTED);
+  return esp.connectedToNetwork();
 }
 
-void cc3000IpToArray(uint32_t ip, uint8_t * ip_array){
+void espIpToArray(uint32_t ip, uint8_t * ip_array){
   for(uint8_t ii = 0; ii < 4; ii++){
     ip_array[ii] = ip & 0xff;
     ip >>= 8;
   }
 }
 
-uint32_t arrayToCC3000Ip(uint8_t * ip_array){
+uint32_t arrayToESP8266Ip(uint8_t * ip_array){
   uint32_t ip = 0;
   for(int8_t ii = 3; ii > 0; ii++){
     ip |= ip_array[ii];    
@@ -4603,7 +4583,7 @@ boolean mqttResolve(void){
     updateLCD("MQTT SERVER", 1);
     SUCCESS_MESSAGE_DELAY();
     
-    if  (!cc3000.getHostByName(mqtt_server_name, &ip) || (ip == 0))  {
+    if  (!esp.getHostByName(mqtt_server_name, &ip) || (ip == 0))  {
       Serial.print(F("Error: Couldn't resolve '"));
       Serial.print(mqtt_server_name);
       Serial.println(F("'"));
@@ -4615,11 +4595,13 @@ boolean mqttResolve(void){
     }  
     else{
       resolved = true;
-      cc3000IpToArray(ip, mqtt_server_ip);      
+      espIpToArray(ip, mqtt_server_ip);      
       Serial.print(F("Info: Resolved \""));
       Serial.print(mqtt_server_name);
       Serial.print(F("\" to IP address "));
-      cc3000.printIPdotsRev(ip);
+      char ip_str[16] = {0};
+      esp.IpUint32ToString(ip, &(ip_str[0]));
+      Serial.print((char *) ip_str);
       
       updateLCD(ip, 1);      
       lcdSmiley(15, 1);
@@ -4656,7 +4638,7 @@ boolean mqttReconnect(void){
 
      mqtt_client.setBrokerIP(mqtt_server_ip);
      mqtt_client.setPort(mqtt_port);
-     mqtt_client.setClient(wifiClient);          
+     mqtt_client.setClient(esp);          
    }
    else{
      loop_return_flag = mqtt_client.loop();
@@ -5561,133 +5543,250 @@ void invalidateSignature(void){
   while(flash.busy()){;}   
 }
 
-// returns the number of header bytes in the server response
-// if the file was downloaded in one chunk, this means that
-// mybuffer[ret] is the first byte of the response body
-uint16_t downloadFile(char * filename, void (*responseBodyProcessor)(uint8_t, boolean, unsigned long, uint16_t)){    
-  uint16_t ret = 0;
+uint16_t download_body_crc16_checksum = 0;
+uint32_t download_body_bytes_received = 0;
+boolean download_past_header = false; 
+uint32_t download_content_length = 0;
 
-  // re-initialize the globals
+void downloadHandleHeader(char * key, char * value){
+//  Serial.print("\"");
+//  Serial.print(key);
+//  Serial.print("\" => \"");
+//  Serial.print(value);
+//  Serial.println("\"");
+  
+  if(strcmp(key, "Content-Length") == 0){
+    download_content_length = strtoul(value, NULL, 10);   
+  }
+}
+
+uint32_t downloadProcessHeader(uint8_t * data, uint32_t data_length){
+  uint32_t start_index = 0;         
+  static uint8_t header_guard_index = 0; 
+  static boolean past_first_line = false;
+  static char key[64] = {0};
+  static char value[64] = {0};
+  static uint8_t key_or_value = 0;
+  static uint8_t keyval_index = 0;
+  
+  if(!download_past_header){
+    for(uint32_t ii = 0; ii < data_length; ii++){                 
+      switch(header_guard_index){
+      case 0:
+        if(data[ii] == '\r') header_guard_index++;
+        else if(data[ii] == ':'){
+          key_or_value = 1;
+          keyval_index = 0;
+        }
+        else if(past_first_line){
+          if(keyval_index < 63){
+            if(!((keyval_index == 0) && (data[ii] == ' '))){ // strip leading spaces
+              if(key_or_value == 0) key[keyval_index++] = data[ii];
+              else value[keyval_index++] = data[ii];
+            }
+          }
+          else{
+            // warning the key string doesn't fit in 64 characters
+          }
+        }
+        break;
+      case 1:
+        if(data[ii] == '\n'){
+          header_guard_index++;
+          
+          if(past_first_line){
+            downloadHandleHeader((char *) key, (char *) value);
+          }
+          
+          past_first_line = true;
+          key_or_value = 0;
+          keyval_index = 0;
+          memset(key, 0, 64);
+          memset(value, 0, 64);          
+        }
+        else header_guard_index = 0;        
+        break;
+      case 2:
+        if(data[ii] == '\r') header_guard_index++;
+        else{
+          key[keyval_index++] = data[ii];
+          header_guard_index = 0;         
+        }
+        break;
+      case 3:
+        if(data[ii] == '\n') header_guard_index++;
+        else header_guard_index = 0;         
+        break;
+      case 4:        
+        download_past_header = true;
+        start_index = ii;
+        header_guard_index = 0;
+        break;
+      }      
+    }
+  }  
+
+  return start_index;
+}
+
+void downloadFile(char * hostname, uint16_t port, char * filename, void (*responseBodyProcessor)(uint8_t *, uint32_t)){      
   unsigned long total_bytes_read = 0;
-  unsigned long body_bytes_read = 0;
-  uint16_t crc16_checksum = 0;
-  uint8_t mybuffer[512] = {0};
+  uint8_t mybuffer[64] = {0};
+  
+  // re-initialize the globals
+  download_body_crc16_checksum = 0;
+  download_body_bytes_received = 0;   
+  download_past_header = false;  
+  download_content_length = 0;
   
   /* Try connecting to the website.
      Note: HTTP/1.1 protocol is used to keep the server from closing the connection before all data is read.
-  */
-  WildFire_CC3000_Client www = cc3000.connectTCP(update_server_ip32, 80);
-  if (www.connected()) {
-    www.fastrprint(F("GET /"));
-    www.fastrprint(filename);
-    www.fastrprint(F(" HTTP/1.1\r\n"));
-    www.fastrprint(F("Host: ")); www.fastrprint(update_server_name); www.fastrprint(F("\r\n"));
-    www.fastrprint(F("\r\n"));
-    www.println();
+  */ 
+  esp.connect(hostname, port);
+  if (esp.connected()) {   
+    memset(scratch, 0, 1024);
+    snprintf(scratch, 1023, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);        
+    esp.print(scratch);
+    //Serial.print(scratch);    
   } else {
-    Serial.println(F("Error: Update Server Connection failed"));    
-    return 0;
+    Serial.println(F("Error: Server Connection failed"));    
+    return;
   }
 
   Serial.println(F("Info: -------------------------------------"));
   
   /* Read data until either the connection is closed, or the idle timeout is reached. */ 
-  unsigned long lastRead = millis();
-  unsigned long num_chunks = 0;
-  unsigned long num_bytes_read = 0;
-  unsigned long num_header_bytes = 0;
+  unsigned long lastRead = millis(); 
+  unsigned long num_bytes_read = 0;  
   unsigned long start_time = millis();
+  uint32_t loop_counter = 0;
   
-  #define PARSING_WAITING_FOR_CR       0
-  #define PARSING_WAITING_FOR_CRNL     1
-  #define PARSING_WAITING_FOR_CRNLCR   2
-  #define PARSING_WAITING_FOR_CRNLCRNL 3  
-  #define PARSING_FOUND_CRNLCRNL       4
-  uint8_t parsing_state = PARSING_WAITING_FOR_CR;
-  // get past the response headers    
-  while (www.connected() && (millis() - lastRead < IDLE_TIMEOUT_MS)) {   
-    while (www.available()) {
-      //char c = www.read();
-      num_bytes_read = www.read(mybuffer, 255);
-      num_chunks++;
-      
-      if((num_chunks % 20) == 0){
-        petWatchdog();
-        updateCornerDot();
-      }
-      
-      for(uint32_t ii = 0 ; ii < num_bytes_read; ii++){
-         if(parsing_state != PARSING_FOUND_CRNLCRNL){
-           num_header_bytes++;
-         }
-         
-         switch(parsing_state){
-         case PARSING_WAITING_FOR_CR:
-           if(mybuffer[ii] == '\r'){
-             parsing_state = PARSING_WAITING_FOR_CRNL;
-           }
-           break;
-         case PARSING_WAITING_FOR_CRNL:
-           if(mybuffer[ii] == '\n'){
-             parsing_state = PARSING_WAITING_FOR_CRNLCR;
-           }         
-           else{
-             parsing_state = PARSING_WAITING_FOR_CR;
-           }
-           break;
-         case PARSING_WAITING_FOR_CRNLCR:
-           if(mybuffer[ii] == '\r'){
-             parsing_state = PARSING_WAITING_FOR_CRNLCRNL;
-           }         
-           else{
-             parsing_state = PARSING_WAITING_FOR_CR;
-           }         
-           break;
-         case PARSING_WAITING_FOR_CRNLCRNL:
-           if(mybuffer[ii] == '\n'){
-             parsing_state = PARSING_FOUND_CRNLCRNL;
-           }         
-           else{
-             parsing_state = PARSING_WAITING_FOR_CR;
-           }         
-           break;             
-         default:           
-           crc16_checksum = _crc16_update(crc16_checksum, mybuffer[ii]);
-           if(responseBodyProcessor != 0){
-             responseBodyProcessor(mybuffer[ii], false, body_bytes_read, crc16_checksum);
-             body_bytes_read++;
-           }
-           break;
-         }               
-      }
-      //Serial.println(num_bytes_read);
+  while (esp.connected(false) && (millis() - lastRead < IDLE_TIMEOUT_MS)) {        
+    while (esp.available()) {
+      //char c = esp.read();
+      num_bytes_read = esp.read(mybuffer, 64);     
       total_bytes_read += num_bytes_read;
-      uint16_t address = 0;
-      uint8_t data_byte = 0;       
+
+      if(loop_counter == 4096){
+        Serial.print("Info: ");
+      }
+      
+      loop_counter++;
+      if((loop_counter % 4096) == 0){
+        Serial.print(".");
+        updateCornerDot();
+        petWatchdog();
+      }
+
+      if(responseBodyProcessor != 0){
+        responseBodyProcessor(mybuffer, num_bytes_read); // signal end of stream
+      }        
+        
       lastRead = millis();
     }
   }
   
-  www.close();
+  esp.stop();
   
-  if(responseBodyProcessor != 0){
-    responseBodyProcessor(0, true, body_bytes_read, crc16_checksum); // signal end of stream
-  }  
-  
-  unsigned long end_time = millis();
-  Serial.println(F("Info: -------------------------------------"));
-  Serial.print("Info: # Bytes Read: ");
+  Serial.println();  
+  Serial.println("Info: Download Complete");
+  Serial.print("Info: Total Bytes: ");
   Serial.println(total_bytes_read);
-  Serial.print("Info: # Chunks Read: ");
-  Serial.println(num_chunks);
   Serial.print("Info: File Size: ");
-  Serial.println(total_bytes_read - num_header_bytes);
-  Serial.print("Info: CRC16 Checksum: ");
-  Serial.println(crc16_checksum);
-  Serial.print("Info: Download Time: ");
-  Serial.println(end_time - start_time); 
+  Serial.println(download_body_bytes_received);
+  Serial.print("Info: Checksum: ");
+  Serial.println(download_body_crc16_checksum);  
+  Serial.print("Info: Duration: ");
+  Serial.println(millis() - start_time);   
+    
+}
+
+void processChkResponseData(uint8_t * data, uint32_t data_length){
+  uint32_t start_index = downloadProcessHeader(data, data_length);
+  char * endPtr;
+  static char buff[64] = {0};
+  static uint8_t buff_idx = 0;  
+    
+  if(download_past_header){       
+    for(uint32_t ii = start_index; ii < data_length; ii++){     
+      download_body_bytes_received++;
+      download_body_crc16_checksum = _crc16_update(download_body_crc16_checksum, data[ii]);
+      if(buff_idx < 63){
+        buff[buff_idx++] = data[ii];         
+      }      
+    }
+
+    if(download_body_bytes_received == download_content_length){
+      integrity_num_bytes_total = strtoul(buff, &endPtr, 10);
+      if(endPtr != 0){
+        integrity_crc16_checksum = strtoul(endPtr, 0, 10);
+        downloaded_integrity_file = true;
+      }
+      Serial.println("Info: Integrity Checks: ");
+      Serial.print(  "Info:    File Size: ");
+      Serial.println(integrity_num_bytes_total);
+      Serial.print(  "Info:    CRC16 Checksum: ");
+      Serial.println(integrity_crc16_checksum);    
+    }
+    
+  }
+    
+}
+
+void processHexResponseData(uint8_t * data, uint32_t data_length){
+  uint32_t start_index = downloadProcessHeader(data, data_length);
+  static uint8_t page[256] = {0};
+  static uint16_t page_idx = 0;
+  static uint32_t page_address = 0;
+  static uint32_t local_download_body_bytes_received = 0;
   
-  return num_header_bytes;
+  if(download_past_header){   
+    for(uint32_t ii = start_index; ii < data_length; ii++){     
+      download_body_bytes_received++;
+      download_body_crc16_checksum = _crc16_update(download_body_crc16_checksum, data[ii]);
+
+      if(page_idx < 256){
+        page[page_idx++] = data[ii];  
+        if(page_idx >= 256){
+           page_idx = 0;
+        }
+      }     
+
+      if((download_body_bytes_received == download_content_length) || (page_idx == 0)){       
+        uint16_t top_bound = 256;
+        if(page_idx != 0){
+          top_bound = page_idx;
+        }
+        flash.writeBytes(page_address, page, top_bound);
+                
+        // clear the page
+        memset(page, 0, 256);
+        
+        // advance the page address
+        page_address += 256;        
+      }       
+    }
+
+    if(download_body_bytes_received == download_content_length){
+      if((download_body_bytes_received == integrity_num_bytes_total) && (download_body_crc16_checksum == integrity_crc16_checksum)){
+        integrity_check_succeeded = true;
+        Serial.println(F("Info: Integrity Check Succeeded!"));
+      }
+      else{
+        Serial.println(F("Error: Integrity Check Failed!"));
+        Serial.print(F("Error: Expected Checksum: "));
+        Serial.print(integrity_crc16_checksum);
+        Serial.print(F(", Actual Checksum: "));
+        Serial.println(download_body_crc16_checksum);
+        Serial.print(F("Error: Expected Filesize: "));
+        Serial.print(integrity_num_bytes_total);
+        Serial.print(F(", Actual Filesize: "));
+        Serial.println(download_body_bytes_received);
+      }
+    }
+
+  }
+    
 }
 
 void checkForFirmwareUpdates(){ 
@@ -5700,24 +5799,14 @@ void checkForFirmwareUpdates(){
                   "    UPDATES     "));
     eeprom_read_block(filename, (const void *) EEPROM_UPDATE_FILENAME, 31);
     strncat_P(filename, PSTR(".chk"), 4);    
-    uint16_t num_hdr_bytes = 0;
-    for(uint8_t ii = 0; ii < 3; ii++){
-      Serial.print(F("Info: Attempt #"));
-      Serial.print(ii+1);
-      Serial.print(F(" downloading \""));
-      Serial.print(filename);
-      Serial.print(F("\""));
-      Serial.println();
-      
-      num_hdr_bytes = downloadFile(filename, processIntegrityCheckBody);   
-      if(downloaded_integrity_file){
-        lcdSmiley(15, 1);
-        SUCCESS_MESSAGE_DELAY();
-        delayForWatchdog();        
-        petWatchdog();        
-        break; 
-      }
-    }
+    
+    downloadFile(update_server_name, 80, filename, processChkResponseData);   
+    if(downloaded_integrity_file){
+      lcdSmiley(15, 1);
+      SUCCESS_MESSAGE_DELAY();
+      delayForWatchdog();        
+      petWatchdog();              
+    }    
 
     if(downloaded_integrity_file){
       // compare the just-retrieved signature file contents 
@@ -5743,8 +5832,15 @@ void checkForFirmwareUpdates(){
         Serial.print(filename);
         Serial.print(F("\""));
         Serial.println();
+
+        //before starting the download of the hex file, first erase the flash memory up to the second to last page        
+        for(uint32_t page = 0; page < SECOND_TO_LAST_4K_PAGE_ADDRESS; page+=4096){
+          while(flash.busy()){;}    
+          flash.blockErase4K(page); 
+          while(flash.busy()){;}           
+        }
         
-        downloadFile(filename, processUpdateHexBody);    
+        downloadFile(update_server_name, 80, filename, processHexResponseData);    
         while(flash.busy()){;}           
         if(integrity_check_succeeded){ 
           // also write these parameters to their rightful place in the SPI flash
@@ -5810,7 +5906,7 @@ boolean updateServerResolve(void){
       updateLCD("UPDATE SERVER", 1);
       SUCCESS_MESSAGE_DELAY();
       
-      if  (!cc3000.getHostByName(update_server_name, &update_server_ip32) || (update_server_ip32 == 0)){
+      if  (!esp.getHostByName(update_server_name, &update_server_ip32) || (update_server_ip32 == 0)){
         Serial.print(F("Error: Couldn't resolve '"));
         Serial.print(update_server_name);
         Serial.println(F("'"));
@@ -5825,7 +5921,9 @@ boolean updateServerResolve(void){
         Serial.print(F("Info: Resolved \""));
         Serial.print(update_server_name);
         Serial.print(F("\" to IP address "));
-        cc3000.printIPdotsRev(update_server_ip32);
+        char ip_str[16] = {0};
+        esp.IpUint32ToString(update_server_ip32, &(ip_str[0]));
+        Serial.print((char *) ip_str);
         
         updateLCD(update_server_ip32, 1);      
         lcdSmiley(15, 1);
@@ -5840,83 +5938,6 @@ boolean updateServerResolve(void){
   
   // not connected to network
   return false;
-}
-
-void processIntegrityCheckBody(uint8_t dataByte, boolean end_of_stream, unsigned long body_bytes_read, uint16_t crc16_checksum){
-  char * endPtr;
-  static char buff[64] = {0};
-  static uint8_t buff_idx = 0;  
-  
-  if(end_of_stream){
-    integrity_num_bytes_total = strtoul(buff, &endPtr, 10);
-    if(endPtr != 0){
-      integrity_crc16_checksum = strtoul(endPtr, 0, 10);
-      downloaded_integrity_file = true;
-    }
-    Serial.println("Info: Integrity Checks: ");
-    Serial.print(  "Info:    File Size: ");
-    Serial.println(integrity_num_bytes_total);
-    Serial.print(  "Info:    CRC16 Checksum: ");
-    Serial.println(integrity_crc16_checksum);                
-  }
-  else{
-    if(buff_idx < 63){
-      buff[buff_idx++] = dataByte;
-    }
-  }
-}
-
-void processUpdateHexBody(uint8_t dataByte, boolean end_of_stream, unsigned long body_bytes_read, uint16_t crc16_checksum){
-  static uint8_t page[256] = {0};
-  static uint16_t page_idx = 0;
-  static uint32_t page_address = 0;
-  
-  if(page_idx < 256){
-    page[page_idx++] = dataByte;  
-    if(page_idx >= 256){
-       page_idx = 0;
-    }
-  }
-  
-  if(end_of_stream || (page_idx == 0)){
-    if((page_address % 4096) == 0){
-      while(flash.busy()){;}    
-      flash.blockErase4K(page_address); 
-      while(flash.busy()){;}   
-    }    
-    
-    uint16_t top_bound = 256;
-    if(page_idx != 0){
-      top_bound = page_idx;
-    }
-    flash.writeBytes(page_address, page, top_bound);
-    
-    
-    // clear the page
-    memset(page, 0, 256);
-    
-    // advance the page address
-    page_address += 256;
-    
-  }
-  
-  if(end_of_stream){
-    if((body_bytes_read == integrity_num_bytes_total) && (crc16_checksum == integrity_crc16_checksum)){
-      integrity_check_succeeded = true;
-      Serial.println(F("Info: Integrity Check Succeeded!"));
-    }
-    else{
-      Serial.println(F("Error: Integrity Check Failed!"));
-      Serial.print(F("Error: Expected Checksum: "));
-      Serial.print(integrity_crc16_checksum);
-      Serial.print(F(", Actual Checksum: "));
-      Serial.println(crc16_checksum);
-      Serial.print(F("Error: Expected Filesize: "));
-      Serial.print(integrity_num_bytes_total);
-      Serial.print(F(", Actual Filesize: "));
-      Serial.println(body_bytes_read);
-    }
-  }
 }
 
 void getCurrentFirmwareSignature(void){  
@@ -6148,7 +6169,7 @@ void getNetworkTime(void){
   uint8_t       buf[48];
   unsigned long ip, startTime, t = 0L;
   
-  if(cc3000.getHostByName(server, &ip)) {
+  if(esp.getHostByName(server, &ip)) {
     static const char PROGMEM
       timeReqA[] = { 227,  0,  6, 236 },
       timeReqB[] = {  49, 78, 49,  52 };
@@ -6156,28 +6177,29 @@ void getNetworkTime(void){
     Serial.print(F("Info: Getting NTP Time..."));
     startTime = millis();
     do {
-      ntpClient = cc3000.connectUDP(ip, 123);
-    } while((!ntpClient.connected()) &&
+      esp.connectUDP(ip, 123);
+    } while((!esp.connected()) &&
             ((millis() - startTime) < connectTimeout));
 
-    if(ntpClient.connected()) {      
+    if(esp.connected()) {      
       // Assemble and issue request packet
       memset(buf, 0, sizeof(buf));
       memcpy_P( buf    , timeReqA, sizeof(timeReqA));
       memcpy_P(&buf[12], timeReqB, sizeof(timeReqB));
-      ntpClient.write(buf, sizeof(buf));
+      esp.write(buf, sizeof(buf));
       memset(buf, 0, sizeof(buf));
       startTime = millis();
-      while((!ntpClient.available()) &&
+      while((esp.available() < 44) &&
             ((millis() - startTime) < responseTimeout));
-      if(ntpClient.available()) {
-        ntpClient.read(buf, sizeof(buf));
+      
+      if(esp.available() >= 44) {
+        esp.read(buf, sizeof(buf));
         t = (((unsigned long)buf[40] << 24) |
              ((unsigned long)buf[41] << 16) |
              ((unsigned long)buf[42] <<  8) |
               (unsigned long)buf[43]) - 2208988800UL;      
       }
-      ntpClient.close();
+      esp.stop();
     }
   }
 
