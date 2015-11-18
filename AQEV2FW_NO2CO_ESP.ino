@@ -29,7 +29,9 @@
 #define SECOND_TO_LAST_4K_PAGE_ADDRESS      0x7E000     
 
 int esp8266_enable_pin = 23; // Arduino digital the pin that is used to reset/enable the ESP8266 module
+
 Stream * at_command_interface = &Serial1;  // Serial1 is the 'stream' the AT command interface is on
+Stream * at_debug_interface = &Serial;
 ESP8266_AT_Client esp(esp8266_enable_pin, at_command_interface); // instantiate the client object
 
 TinyWatchdog tinywdt;
@@ -425,7 +427,7 @@ void setup() {
   // initialize hardware
   initializeHardware(); 
   backlightOff();
-      
+  
   //  uint8_t tmp[EEPROM_CONFIG_MEMORY_SIZE] = {0};
   //  get_eeprom_config(tmp);
   //  Serial.println(F("EEPROM Config:"));
@@ -1018,8 +1020,8 @@ void initializeHardware(void) {
   Serial.print(F("Info: ESP8266 Initialization..."));  
   SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
   petWatchdog();
-
-  esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up
+  
+  esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up   
   if (esp.reset()) {
     esp.setNetworkMode(1);
     Serial.println(F("OK."));
@@ -1037,8 +1039,10 @@ void initializeHardware(void) {
 }
 
 /****** CONFIGURATION SUPPORT FUNCTIONS ******/
-void initializeNewConfigSettings(void){
-  static char command_buf[128] = {0};
+void initializeNewConfigSettings(void){  
+  char * command_buf = &(scratch[0]);
+  clearTempBuffers();
+  
   boolean in_config_mode = false; 
   allowed_to_write_config_eeprom = true;
   
@@ -2109,10 +2113,7 @@ void print_eeprom_value(char * arg) {
   else if(strncmp(arg, "altitude", 8) == 0) {
     Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS));    
   }         
-  else if(strncmp(arg, "settings", 8) == 0) {
-    static char allff[64] = {0};
-    memset(allff, 0xff, 64);
-
+  else if(strncmp(arg, "settings", 8) == 0) {   
     // print all the settings to the screen in an orderly fashion
     Serial.println(F(" +-------------------------------------------------------------+"));
     Serial.println(F(" | Preferences/Options:                                        |"));
@@ -4240,7 +4241,7 @@ void updateLcdProgressDots(void){
 /****** WIFI SUPPORT FUNCTIONS ******/
 void displayRSSI(void){ 
   char ssid[33] = {0};
-  static ap_scan_result_t results[10] = {0};    
+  static ap_scan_result_t res = {0};    
   int8_t max_rssi = -256;
   boolean found_ssid = false;
   uint8_t target_network_secMode = 0;  
@@ -4254,30 +4255,19 @@ void displayRSSI(void){
   Serial.println(F("Info: Beginning Network Scan..."));                
   SUCCESS_MESSAGE_DELAY();
 
-  if(esp.scanAccessPoints((ap_scan_result_t *) &(results[0]), 10, &num_results_found)){
-    Serial.print(F("Info: Network Scan found "));
-    Serial.print(num_results_found);
-    Serial.println(F(" networks"));    
-    for(uint8_t ii = 0; ii < num_results_found; ii++){
-      if(strncmp((char *)&(results[ii].ssid[0]), ssid, 32) == 0){      
-        int8_t rssi = results[ii].rssi;
-        uint8_t sec = results[ii].security;        
-        Serial.print(F("Info: Found Access Point \""));
-        Serial.print(ssid);
-        Serial.print(F("\", "));
-        Serial.print(F("RSSI = "));
-        Serial.println(rssi);
-        found_ssid = true;
-        if(rssi > max_rssi){
-          max_rssi = rssi; 
-          target_network_secMode = sec;
-        }
-      }      
-    }    
-  }  
- 
-  if(found_ssid){
-    int8_t rssi_dbm = max_rssi;
+  boolean foundSSID = esp.scanForAccessPoint(ssid, &res, &num_results_found);
+  Serial.print(F("Info: Network Scan found "));
+  Serial.print(num_results_found);
+  Serial.println(F(" networks"));
+  
+  Serial.print(F("Info: Found Access Point \""));
+  Serial.print(ssid);
+  Serial.print(F("\", ")); 
+  if(foundSSID){
+    
+    Serial.print(F("RSSI = "));
+    Serial.println(res.rssi);    
+    int8_t rssi_dbm = res.rssi;
     lcdBars(rssi_to_bars(rssi_dbm));
     lcdSmiley(15, 1); // lower right corner
     
@@ -4301,6 +4291,7 @@ void displayRSSI(void){
     ERROR_MESSAGE_DELAY(); // ERROR is intentional here, to get a longer delay
   }
   else{
+    Serial.println(F("Not Found.")); 
     updateLCD("NOT FOUND", 1);
     lcdFrownie(15, 1); // lower right corner
     ERROR_MESSAGE_DELAY();
@@ -4581,9 +4572,8 @@ boolean mqttResolve(void){
     eeprom_read_block(mqtt_server_name, (const void *) EEPROM_MQTT_SERVER_NAME, 31);
     setLCD_P(PSTR("   RESOLVING"));
     updateLCD("MQTT SERVER", 1);
-    SUCCESS_MESSAGE_DELAY();
-    
-    if  (!esp.getHostByName(mqtt_server_name, &ip) || (ip == 0))  {
+    SUCCESS_MESSAGE_DELAY();    
+    if  (!esp.getHostByName(mqtt_server_name, &ip) || (ip == 0))  {      
       Serial.print(F("Error: Couldn't resolve '"));
       Serial.print(mqtt_server_name);
       Serial.println(F("'"));
@@ -4608,8 +4598,7 @@ boolean mqttResolve(void){
       SUCCESS_MESSAGE_DELAY();          
       Serial.println();    
     }
-  }
-    
+  }    
   return true;
 }
 
@@ -5350,8 +5339,8 @@ float calculateAverage(float * buf, uint16_t num_samples){
 
 void printCsvDataLine(){
   static boolean first = true;
-  static char dataString[512] = {0};  
-  memset(dataString, 0, 512);
+  char * dataString = &(scratch[0]);  
+  clearTempBuffers();
   
   uint16_t len = 0;
   uint16_t dataStringRemaining = 511;
@@ -5644,8 +5633,8 @@ void downloadFile(char * hostname, uint16_t port, char * filename, void (*respon
   */ 
   esp.connect(hostname, port);
   if (esp.connected()) {   
-    memset(scratch, 0, 1024);
-    snprintf(scratch, 1023, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);        
+    memset(scratch, 0, 512);
+    snprintf(scratch, 511, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);        
     esp.print(scratch);
     //Serial.print(scratch);    
   } else {
