@@ -1020,7 +1020,8 @@ void initializeHardware(void) {
   Serial.print(F("Info: ESP8266 Initialization..."));  
   SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
   petWatchdog();
-  
+
+  esp.setTcpKeepAliveInterval(10); // 10 seconds
   esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up   
   if (esp.reset()) {
     esp.setNetworkMode(1);
@@ -3339,11 +3340,6 @@ void set_mqtt_client_id(char * arg){
   // and must start with an letter
   char client_id[32] = {0};  
   
-  if(!isalpha(arg[0])){
-    Serial.println(F("Error: MQTT client ID must begin with a letter"));
-    return;
-  }
-  
   uint16_t len = strlen(arg);
   if ((len >= 1) && (len <= 23)) {
     strncpy(client_id, arg, len);
@@ -4624,9 +4620,7 @@ boolean mqttReconnect(void){
      eeprom_read_block(MQTT_TOPIC_PREFIX, (const void *) EEPROM_MQTT_TOPIC_PREFIX, 63);
      mqtt_auth_enabled = eeprom_read_byte((const uint8_t *) EEPROM_MQTT_AUTH);
      mqtt_port = eeprom_read_dword((const uint32_t *) EEPROM_MQTT_PORT);
-
-     mqtt_client.setBrokerIP(mqtt_server_ip);
-     mqtt_client.setPort(mqtt_port);
+     mqtt_client.setServer(mqtt_server_ip, mqtt_port);
      mqtt_client.setClient(esp);          
    }
    else{
