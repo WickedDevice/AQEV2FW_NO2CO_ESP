@@ -1539,6 +1539,7 @@ void help_menu(char * arg) {
       Serial.println(F("use <param>"));
       get_help_indent(); Serial.println(F("<param> is one of:"));
       get_help_indent(); Serial.println(F("dhcp - wipes the Static IP address from the EEPROM"));
+      get_help_indent(); Serial.println(F("ntp - enables NTP capabilities"));
       warn_could_break_connect();      
     }
     else if (strncmp("list", arg, 4) == 0) {
