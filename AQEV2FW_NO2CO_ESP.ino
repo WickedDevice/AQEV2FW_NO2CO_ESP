@@ -16,6 +16,7 @@
 #include <util/crc16.h>
 #include <math.h>
 #include <TinyGPS.h>
+#include <SoftwareSerial.h>
 
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
@@ -50,7 +51,8 @@ RTC_DS3231 rtc;
 SdFat SD;
 
 TinyGPS gps;
-Stream * gpsSerial = NULL; // &Serial1;   // TODO: This will need to be solved if we allocate Serial1 to anything else in the future
+SoftwareSerial gpsSerial(18, 17); // RX, TX
+boolean gps_disabled = false;
 #define GPS_MQTT_STRING_LENGTH (128)
 #define GPS_CSV_STRING_LENGTH (64)
 char gps_mqtt_string[GPS_MQTT_STRING_LENGTH] = {0};
@@ -734,25 +736,29 @@ void setup() {
                   "NO2  ---  CO ---"));           
     SUCCESS_MESSAGE_DELAY();                      
   }
+  
+  resumeGpsProcessing();
 }
 
-void loop() {
+void loop() {  
   current_millis = millis();
 
-  //TODO: use SoftwareSerial for GPS
   // whenever you come through loop, process a GPS byte if there is one
-  // will need to test if this keeps up, but I think it will    
-  /*
-  if(gpsSerial->available()){    
-    if(gps.encode(gpsSerial->read())){    
-      gps.f_get_position(&gps_latitude, &gps_longitude, &gps_age);
-      gps_altitude = gps.f_altitude();
-      updateGpsStrings();
+  // will need to test if this keeps up, but I think it will      
+  if(!gps_disabled){       
+    while(gpsSerial.available()){
+      if(gps.encode(gpsSerial.read())){
+        gps.f_get_position(&gps_latitude, &gps_longitude, &gps_age);
+        gps_altitude = gps.f_altitude();
+        updateGpsStrings();
+        break;
+      }
     }
   }
-  */
-
+  
+  
   if(current_millis - previous_sensor_sampling_millis >= sampling_interval){
+    suspendGpsProcessing();
     previous_sensor_sampling_millis = current_millis;    
     //Serial.print(F("Info: Sampling Sensors @ "));
     //Serial.println(millis());
@@ -764,6 +770,7 @@ void loop() {
   }
 
   if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
+    suspendGpsProcessing();
     previous_touch_sampling_millis = current_millis;    
     collectTouch();    
     processTouchQuietly();  
@@ -784,10 +791,15 @@ void loop() {
   
   // pet the watchdog
   if (current_millis - previous_tinywdt_millis >= tinywdt_interval) {
+    suspendGpsProcessing();
     previous_tinywdt_millis = current_millis;
     //Serial.println(F("Info: Watchdog Pet."));
     delayForWatchdog();
     petWatchdog();
+  }
+
+  if(gps_disabled){
+    resumeGpsProcessing();
   }
 }
 
@@ -809,8 +821,8 @@ void init_firmware_version(void){
 
 void initializeHardware(void) {
   Serial.begin(115200);
-  Serial1.begin(115200); 
-
+  Serial1.begin(115200);
+  
   init_firmware_version();
   
   // without this line, if the touch hardware is absent
@@ -5168,6 +5180,7 @@ void loop_wifi_mqtt_mode(void){
   static unsigned long previous_mqtt_publish_millis = 0;
   
   if(current_millis - previous_mqtt_publish_millis >= reporting_interval){   
+    suspendGpsProcessing();    
     previous_mqtt_publish_millis = current_millis;      
     
     printCsvDataLine();
@@ -5314,7 +5327,8 @@ void loop_offline_mode(void){
   // write record timer intervals
   static unsigned long previous_write_record_millis = 0;
 
-  if(current_millis - previous_write_record_millis >= reporting_interval){   
+  if(current_millis - previous_write_record_millis >= reporting_interval){ 
+    suspendGpsProcessing();   
     previous_write_record_millis = current_millis;
     printCsvDataLine();
   }  
@@ -6141,6 +6155,16 @@ void updateGpsStrings(void){
       snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_field_csv_template, gps_latitude, gps_longitude);
     }    
   }
+}
+
+void suspendGpsProcessing(void){
+  gpsSerial.end();
+  gps_disabled = true;
+}
+
+void resumeGpsProcessing(void){
+  gpsSerial.begin(9600);
+  gps_disabled = false;
 }
 
 /****** NTP SUPPORT FUNCTIONS ******/
