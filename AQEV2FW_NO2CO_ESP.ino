@@ -21,7 +21,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 1
-#define AQEV2FW_PATCH_VERSION 6
+#define AQEV2FW_PATCH_VERSION 7
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
