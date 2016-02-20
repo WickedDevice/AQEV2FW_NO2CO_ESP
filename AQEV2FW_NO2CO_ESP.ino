@@ -325,6 +325,7 @@ char * commands[] = {
   0
 };
 
+void set_update_server_name(char * arg);
 void (*command_functions[])(char * arg) = {
   print_eeprom_value,
   initialize_eeprom_value,
