@@ -4356,7 +4356,7 @@ boolean restartWifi(){
 bool displayConnectionDetails(void){
   uint32_t ipAddress, netmask, gateway;
  
-  if(!esp.getIPAddress(&ipAddress, &netmask, &gateway))
+  if(!esp.getIPAddress(&ipAddress, &gateway, &netmask))
   {
     Serial.println(F("Error: Unable to retrieve the IP Address!"));
     return false;
