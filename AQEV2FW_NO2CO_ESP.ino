@@ -79,6 +79,11 @@ float relative_humidity_percent = 0.0f;
 float no2_ppb = 0.0f;
 float co_ppm = 0.0f;
 
+float instant_temperature_degc = 0.0f;
+float instant_humidity_percent = 0.0f;
+float instant_no2_v = 0.0f;
+float instant_co_v = 0.0f;
+
 float gps_latitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float gps_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float gps_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
@@ -425,6 +430,8 @@ uint8_t esp8266_input_buffer[ESP8266_INPUT_BUFFER_SIZE] = {0};     // sketch mus
 char converted_value_string[64] = {0};
 char compensated_value_string[64] = {0};
 char raw_value_string[64] = {0};
+char raw_instant_value_string[64] = {0};
+
 char MQTT_TOPIC_STRING[128] = {0};
 char MQTT_TOPIC_PREFIX[64] = "/orgs/wd/aqe/";
 
@@ -4907,6 +4914,7 @@ void clearTempBuffers(void){
   memset(converted_value_string, 0, 64);
   memset(compensated_value_string, 0, 64);
   memset(raw_value_string, 0, 64);
+  memset(raw_instant_value_string, 0, 64);
   memset(scratch, 0, 512);
   memset(MQTT_TOPIC_STRING, 0, 128);
 }
@@ -5036,6 +5044,7 @@ boolean publishHeartbeat(){
   clearTempBuffers();
   static uint32_t post_counter = 0;  
   uint8_t sample = pgm_read_byte(&heartbeat_waveform[heartbeat_waveform_index++]); 
+  
   snprintf(scratch, 511, 
   "{"
   "\"serial-number\":\"%s\","
@@ -5069,14 +5078,21 @@ boolean publishTemperature(){
   if(temperature_units == 'F'){
     reported_temperature = toFahrenheit(reported_temperature);
     raw_temperature = toFahrenheit(raw_temperature);
+    safe_dtostrf(toFahrenheit(instant_temperature_degc), -6, 2, raw_instant_value_string, 16);
+  }
+  else{
+    safe_dtostrf(instant_temperature_degc, -6, 2, raw_instant_value_string, 16);
   }
   safe_dtostrf(reported_temperature, -6, 2, converted_value_string, 16);
-  safe_dtostrf(raw_temperature, -6, 2, raw_value_string, 16);
+  safe_dtostrf(raw_temperature, -6, 2, raw_value_string, 16);  
+  
   trim_string(converted_value_string);
   trim_string(raw_value_string);
+  trim_string(raw_instant_value_string);
 
   replace_nan_with_null(converted_value_string);
   replace_nan_with_null(raw_value_string);
+  replace_nan_with_null(raw_instant_value_string);
   
   snprintf(scratch, 511,
     "{"
@@ -5084,10 +5100,18 @@ boolean publishTemperature(){
     "\"converted-value\":%s,"
     "\"converted-units\":\"deg%c\","
     "\"raw-value\":%s,"
+    "\"raw-instant-value\":%s,"
     "\"raw-units\":\"deg%c\","
     "\"sensor-part-number\":\"SHT25\""
     "%s"
-    "}", mqtt_client_id, converted_value_string, temperature_units, raw_value_string, temperature_units, gps_mqtt_string);
+    "}", 
+    mqtt_client_id, 
+    converted_value_string, 
+    temperature_units, 
+    raw_value_string, 
+    raw_instant_value_string,
+    temperature_units, 
+    gps_mqtt_string);
 
   replace_character(scratch, '\'', '\"');
     
@@ -5105,11 +5129,15 @@ boolean publishHumidity(){
   
   safe_dtostrf(reported_humidity, -6, 2, converted_value_string, 16);
   safe_dtostrf(raw_humidity, -6, 2, raw_value_string, 16);
+  safe_dtostrf(instant_humidity_percent, -6, 2, raw_instant_value_string, 16);
+  
   trim_string(converted_value_string);
   trim_string(raw_value_string);
+  trim_string(raw_instant_value_string);
 
   replace_nan_with_null(converted_value_string);
   replace_nan_with_null(raw_value_string);
+  replace_nan_with_null(raw_instant_value_string);
   
   snprintf(scratch, 511, 
     "{"
@@ -5117,10 +5145,16 @@ boolean publishHumidity(){
     "\"converted-value\":%s,"
     "\"converted-units\":\"percent\","
     "\"raw-value\":%s,"
+    "\"raw-instant-value\":%s,"
     "\"raw-units\":\"percent\","  
     "\"sensor-part-number\":\"SHT25\""
     "%s"
-    "}", mqtt_client_id, converted_value_string, raw_value_string, gps_mqtt_string);  
+    "}", 
+    mqtt_client_id, 
+    converted_value_string, 
+    raw_value_string, 
+    raw_instant_value_string, 
+    gps_mqtt_string);  
 
   replace_character(scratch, '\'', '\"');
 
@@ -5129,11 +5163,10 @@ boolean publishHumidity(){
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
-void collectTemperature(void){
-  float raw_value = 0.0f;
+void collectTemperature(void){  
   if(init_sht25_ok){
-    if(sht25.getTemperature(&raw_value)){
-      addSample(TEMPERATURE_SAMPLE_BUFFER, raw_value);       
+    if(sht25.getTemperature(&instant_temperature_degc)){
+      addSample(TEMPERATURE_SAMPLE_BUFFER, instant_temperature_degc);       
       if(sample_buffer_idx == (sample_buffer_depth - 1)){
         temperature_ready = true;
       }
@@ -5141,11 +5174,10 @@ void collectTemperature(void){
   }
 }
 
-void collectHumidity(void){
-  float raw_value = 0.0f;
+void collectHumidity(void){  
   if(init_sht25_ok){
-    if(sht25.getRelativeHumidity(&raw_value)){
-      addSample(HUMIDITY_SAMPLE_BUFFER, raw_value);       
+    if(sht25.getRelativeHumidity(&instant_humidity_percent)){
+      addSample(HUMIDITY_SAMPLE_BUFFER, instant_humidity_percent);       
       if(sample_buffer_idx == (sample_buffer_depth - 1)){
         humidity_ready = true;
       }
@@ -5224,13 +5256,11 @@ void addSample(uint8_t sample_type, float value){
   }
 }
 
-void collectNO2(void){
-  float raw_value = 0.0f;
-  
+void collectNO2(void){  
   if(init_no2_afe_ok && init_no2_adc_ok){
     selectSlot2();  
-    if(burstSampleADC(&raw_value)){      
-      addSample(NO2_SAMPLE_BUFFER, raw_value);
+    if(burstSampleADC(&instant_no2_v)){      
+      addSample(NO2_SAMPLE_BUFFER, instant_no2_v);
       if(sample_buffer_idx == (sample_buffer_depth - 1)){
         no2_ready = true;
       }
@@ -5240,13 +5270,11 @@ void collectNO2(void){
   selectNoSlot(); 
 }
 
-void collectCO(void ){  
-  float raw_value = 0.0f;
-  
+void collectCO(void ){    
   if(init_co_afe_ok && init_co_adc_ok){
     selectSlot1();  
-    if(burstSampleADC(&raw_value)){   
-      addSample(CO_SAMPLE_BUFFER, raw_value);      
+    if(burstSampleADC(&instant_co_v)){   
+      addSample(CO_SAMPLE_BUFFER, instant_co_v);      
       if(sample_buffer_idx == (sample_buffer_depth - 1)){
         co_ready = true;
       }      
@@ -5402,18 +5430,23 @@ boolean publishNO2(){
   safe_dtostrf(no2_moving_average, -8, 5, raw_value_string, 16);
   safe_dtostrf(converted_value, -4, 2, converted_value_string, 16);
   safe_dtostrf(compensated_value, -4, 2, compensated_value_string, 16); 
+  safe_dtostrf(instant_no2_v, -8, 5, raw_instant_value_string, 16);
+  
   trim_string(raw_value_string);
   trim_string(converted_value_string);
   trim_string(compensated_value_string);  
+  trim_string(raw_instant_value_string);
   
   replace_nan_with_null(raw_value_string);
   replace_nan_with_null(converted_value_string);
   replace_nan_with_null(compensated_value_string);
+  replace_nan_with_null(raw_instant_value_string);
   
   snprintf(scratch, 511, 
     "{"
     "\"serial-number\":\"%s\","       
     "\"raw-value\":%s,"
+    "\"raw-instant-value\":%s,"
     "\"raw-units\":\"volt\","
     "\"converted-value\":%s,"
     "\"converted-units\":\"ppb\","
@@ -5423,6 +5456,7 @@ boolean publishNO2(){
     "}",
     mqtt_client_id,
     raw_value_string, 
+    raw_instant_value_string,
     converted_value_string, 
     compensated_value_string,
     gps_mqtt_string);  
@@ -5547,18 +5581,23 @@ boolean publishCO(){
   safe_dtostrf(co_moving_average, -8, 5, raw_value_string, 16);
   safe_dtostrf(converted_value, -4, 2, converted_value_string, 16);
   safe_dtostrf(compensated_value, -4, 2, compensated_value_string, 16);    
+  safe_dtostrf(instant_co_v, -8, 5, raw_instant_value_string, 16);
+  
   trim_string(raw_value_string);
   trim_string(converted_value_string);
   trim_string(compensated_value_string);    
+  trim_string(raw_instant_value_string);    
 
   replace_nan_with_null(raw_value_string);
   replace_nan_with_null(converted_value_string);
   replace_nan_with_null(compensated_value_string);
+  replace_nan_with_null(raw_instant_value_string);
   
   snprintf(scratch, 511, 
     "{"
     "\"serial-number\":\"%s\","      
     "\"raw-value\":%s,"
+    "\"raw-instant-value\":%s,"
     "\"raw-units\":\"volt\","
     "\"converted-value\":%s,"
     "\"converted-units\":\"ppm\","
@@ -5568,6 +5607,7 @@ boolean publishCO(){
     "}",
     mqtt_client_id,
     raw_value_string, 
+    raw_instant_value_string,
     converted_value_string, 
     compensated_value_string,
     gps_mqtt_string);  
