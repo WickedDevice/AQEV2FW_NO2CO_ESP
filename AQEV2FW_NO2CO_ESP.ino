@@ -276,6 +276,7 @@ void sampling_command(char * arg);
 void altitude_command(char * arg);
 void set_ntp_server(char * arg);
 void set_ntp_timezone_offset(char * arg);
+void set_update_server_name(char * arg);
 void no2_baseline_voltage_characterization_command(char * arg);
 void co_baseline_voltage_characterization_command(char * arg);
 
@@ -345,7 +346,6 @@ char * commands[] = {
   0
 };
 
-void set_update_server_name(char * arg);
 void (*command_functions[])(char * arg) = {
   print_eeprom_value,
   initialize_eeprom_value,
