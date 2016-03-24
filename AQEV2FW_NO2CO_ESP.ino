@@ -299,51 +299,96 @@ void co_baseline_voltage_characterization_command(char * arg);
 // in order to ease printing as a table
 // string comparisons should use strncmp rather than strcmp
 // TODO: put this in FLASH and access it through *_P commands
-char * commands[] = {
-  "get        ",
-  "init       ",
-  "restore    ",
-  "mac        ",
-  "method     ",
-  "ssid       ",
-  "pwd        ",
-  "security   ",
-  "staticip   ",
-  "use        ",
-  "mqttsrv    ",
-  "mqttport   ",
-  "mqttuser   ",
-  "mqttpwd    ",  
-  "mqttid     ",
-  "mqttauth   ",
-  "mqttprefix ",
-  "updatesrv  ",
-  "backup     ",
-  "no2_sen    ",
-  "no2_slope  ",
-  "no2_off    ",
-  "co_sen     ",
-  "co_slope   ",
-  "co_off     ",
-  "temp_off   ",
-  "hum_off    ",
-  "key        ",
-  "opmode     ",
-  "tempunit   ",
-  "updatefile ",
-  "force      ",
-  "backlight  ",
-  "datetime   ",
-  "list       ",
-  "download   ",
-  "delete     ",
-  "sampling   ", 
-  "altitude   ",
-  "ntpsrv     ",
-  "tz_off     ",
-  "no2_blv    ",  
-  "co_blv    ",  
-  0
+const char cmd_string_get[] PROGMEM         = "get        ";
+const char cmd_string_init[] PROGMEM        = "init       ";
+const char cmd_string_restore[] PROGMEM     = "restore    ";
+const char cmd_string_mac[] PROGMEM         = "mac        ";
+const char cmd_string_method[] PROGMEM      = "method     ";
+const char cmd_string_ssid[] PROGMEM        = "ssid       ";
+const char cmd_string_pwd[] PROGMEM         = "pwd        ";
+const char cmd_string_security[] PROGMEM    = "security   ";
+const char cmd_string_staticip[] PROGMEM    = "staticip   ";
+const char cmd_string_use[] PROGMEM         = "use        ";
+const char cmd_string_mqttsrv[] PROGMEM     = "mqttsrv    ";
+const char cmd_string_mqttport[] PROGMEM    = "mqttport   ";
+const char cmd_string_mqttuser[] PROGMEM    = "mqttuser   ";
+const char cmd_string_mqttpwd[] PROGMEM     = "mqttpwd    ";
+const char cmd_string_mqttid[] PROGMEM      = "mqttid     ";
+const char cmd_string_mqttauth[] PROGMEM    = "mqttauth   ";
+const char cmd_string_mqttprefix[] PROGMEM  = "mqttprefix ";
+const char cmd_string_updatesrv[] PROGMEM   = "updatesrv  ";
+const char cmd_string_backup[] PROGMEM      = "backup     ";
+const char cmd_string_no2_sen[] PROGMEM     = "no2_sen    ";
+const char cmd_string_no2_slope[] PROGMEM   = "no2_slope  ";
+const char cmd_string_no2_off[] PROGMEM     = "no2_off    ";
+const char cmd_string_co_sen[] PROGMEM      = "co_sen     ";
+const char cmd_string_co_slope[] PROGMEM    = "co_slope   ";
+const char cmd_string_co_off[] PROGMEM      = "co_off     ";
+const char cmd_string_temp_off[] PROGMEM    = "temp_off   ";
+const char cmd_string_hum_off[] PROGMEM     = "hum_off    ";
+const char cmd_string_key[] PROGMEM         = "key        ";
+const char cmd_string_opmode[] PROGMEM      = "opmode     ";
+const char cmd_string_tempunit[] PROGMEM    = "tempunit   ";
+const char cmd_string_updatefile[] PROGMEM  = "updatefile ";
+const char cmd_string_force[] PROGMEM       = "force      ";
+const char cmd_string_backlight[] PROGMEM   = "backlight  ";
+const char cmd_string_datetime[] PROGMEM    = "datetime   ";
+const char cmd_string_list[] PROGMEM        = "list       ";
+const char cmd_string_download[] PROGMEM    = "download   ";
+const char cmd_string_delete[] PROGMEM      = "delete     ";
+const char cmd_string_sampling[] PROGMEM    = "sampling   ";
+const char cmd_string_altitude[] PROGMEM    = "altitude   ";
+const char cmd_string_ntpsrv[] PROGMEM      = "ntpsrv     ";
+const char cmd_string_tz_off[] PROGMEM      = "tz_off     ";
+const char cmd_string_no2_blv[] PROGMEM     = "no2_blv    ";
+const char cmd_string_co_blv[] PROGMEM      = "co_blv     ";
+const char cmd_string_null[] PROGMEM        = "";
+
+PGM_P const commands[] PROGMEM = {
+  cmd_string_get,
+  cmd_string_init,
+  cmd_string_restore,
+  cmd_string_mac,
+  cmd_string_method,
+  cmd_string_ssid,
+  cmd_string_pwd,
+  cmd_string_security,
+  cmd_string_staticip,
+  cmd_string_use,
+  cmd_string_mqttsrv,
+  cmd_string_mqttport,
+  cmd_string_mqttuser,
+  cmd_string_mqttpwd,
+  cmd_string_mqttid,
+  cmd_string_mqttauth,
+  cmd_string_mqttprefix,
+  cmd_string_updatesrv,
+  cmd_string_backup,
+  cmd_string_no2_sen,
+  cmd_string_no2_slope,
+  cmd_string_no2_off,
+  cmd_string_co_sen,
+  cmd_string_co_slope,
+  cmd_string_co_off,
+  cmd_string_temp_off,
+  cmd_string_hum_off,
+  cmd_string_key,
+  cmd_string_opmode,
+  cmd_string_tempunit,
+  cmd_string_updatefile,
+  cmd_string_force,
+  cmd_string_backlight,
+  cmd_string_datetime,
+  cmd_string_list,
+  cmd_string_download,
+  cmd_string_delete,
+  cmd_string_sampling,
+  cmd_string_altitude,
+  cmd_string_ntpsrv,
+  cmd_string_tz_off,
+  cmd_string_no2_blv,
+  cmd_string_co_blv, 
+  cmd_string_null
 };
 
 void (*command_functions[])(char * arg) = {
@@ -1295,13 +1340,17 @@ uint8_t configModeStateMachine(char b, boolean reset_buffers) {
         // command with argument was received, determine if it's valid
         // and if so, call the appropriate command processing function
         boolean command_found = false;
-        for (uint8_t ii = 0; commands[ii] != 0; ii++) {
-          if (strncmp(commands[ii], lower_buf, strlen(buf)) == 0) {
+        char _temp_command[16] = {0};
+        uint8_t ii = 0;
+        do{    
+          strcpy_P(_temp_command, (PGM_P) pgm_read_word(&(commands[ii])));    
+          if (strncmp(_temp_command, lower_buf, strlen(buf)) == 0) {
             command_functions[ii](first_arg);
             command_found = true;
             break;
           }
-        }
+          ii++;
+        } while(_temp_command[0] != 0);
 
         if (!command_found) {
           Serial.print(F("Error: Unknown command \""));
@@ -1401,15 +1450,23 @@ void help_menu(char * arg) {
   if (arg == 0) {
     // list the commands that are legal
     Serial.print(F("help    \texit    \t"));
-    for (uint8_t ii = 0, jj = first_dynamic_command_index; commands[ii] != 0; ii++, jj++) {
+    char _temp_command[16] = {0};
+    uint8_t ii = 0;
+    uint8_t jj = first_dynamic_command_index;     
+    do{        
+      strcpy_P(_temp_command, (PGM_P) pgm_read_word(&(commands[ii])));
+      
       if ((jj % commands_per_line) == 0) {
         Serial.println();
       }
       //Serial.print(jj + 1);
       //Serial.print(". ");
-      Serial.print(commands[ii]);
+      Serial.print(_temp_command);
       Serial.print('\t');
-    }
+
+      ii++; 
+      jj++;
+    } while(_temp_command[0] != 0);
     Serial.println();
   }
   else {
