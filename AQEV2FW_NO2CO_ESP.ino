@@ -969,13 +969,14 @@ void initializeHardware(void) {
           B11111,
           B11111
   };     
+
+  lcd.begin(16, 2);
   
   lcd.createChar(0, smiley);
   lcd.createChar(1, frownie);  
   lcd.createChar(2, emptybar);
   lcd.createChar(3, fullbar);
   
-  lcd.begin(16, 2);
   setLCD_P(PSTR("AIR QUALITY EGG "));
   char tmp[17] = {0};
   snprintf(tmp, 16, "VERSION %d.%d.%d", 
