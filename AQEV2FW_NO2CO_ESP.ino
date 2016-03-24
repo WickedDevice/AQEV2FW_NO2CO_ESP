@@ -298,7 +298,6 @@ void co_baseline_voltage_characterization_command(char * arg);
 // these keywords are padded with spaces
 // in order to ease printing as a table
 // string comparisons should use strncmp rather than strcmp
-// TODO: put this in FLASH and access it through *_P commands
 const char cmd_string_get[] PROGMEM         = "get        ";
 const char cmd_string_init[] PROGMEM        = "init       ";
 const char cmd_string_restore[] PROGMEM     = "restore    ";
