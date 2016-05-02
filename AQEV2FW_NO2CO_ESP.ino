@@ -21,7 +21,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 1
-#define AQEV2FW_PATCH_VERSION 7
+#define AQEV2FW_PATCH_VERSION 8
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -193,6 +193,7 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_NTP_TZ_OFFSET_HRS  (EEPROM_NTP_SERVER_NAME - 4)    // timezone offset as a floating point value
 #define EEPROM_NO2_BASELINE_VOLTAGE_TABLE (EEPROM_NTP_TZ_OFFSET_HRS - (5*sizeof(baseline_voltage_t))) // array of (up to) five structures for baseline offset characterization over temperature
 #define EEPROM_CO_BASELINE_VOLTAGE_TABLE (EEPROM_NO2_BASELINE_VOLTAGE_TABLE - (5*sizeof(baseline_voltage_t))) // array of (up to) five structures for baseline offset characterization over temperature
+#define EEPROM_MQTT_TOPIC_SUFFIX_ENABLED  (EEPROM_CO_BASELINE_VOLTAGE_TABLE - 1)    // a simple flag to indicate whether or not the topic suffix is enabled
 //  /\
 //   L Add values up here by subtracting offsets to previously added values
 //   * ... and make sure the addresses don't collide and start overlapping!
@@ -279,6 +280,7 @@ void set_ntp_timezone_offset(char * arg);
 void set_update_server_name(char * arg);
 void no2_baseline_voltage_characterization_command(char * arg);
 void co_baseline_voltage_characterization_command(char * arg);
+void topic_suffix_config(char * arg);
 
 // Note to self:
 //   When implementing a new parameter, ask yourself:
@@ -315,6 +317,7 @@ const char cmd_string_mqttpwd[] PROGMEM     = "mqttpwd    ";
 const char cmd_string_mqttid[] PROGMEM      = "mqttid     ";
 const char cmd_string_mqttauth[] PROGMEM    = "mqttauth   ";
 const char cmd_string_mqttprefix[] PROGMEM  = "mqttprefix ";
+const char cmd_string_mqttsuffix[] PROGMEM  = "mqttsuffix ";
 const char cmd_string_updatesrv[] PROGMEM   = "updatesrv  ";
 const char cmd_string_backup[] PROGMEM      = "backup     ";
 const char cmd_string_no2_sen[] PROGMEM     = "no2_sen    ";
@@ -361,6 +364,7 @@ PGM_P const commands[] PROGMEM = {
   cmd_string_mqttid,
   cmd_string_mqttauth,
   cmd_string_mqttprefix,
+  cmd_string_mqttsuffix,
   cmd_string_updatesrv,
   cmd_string_backup,
   cmd_string_no2_sen,
@@ -408,6 +412,7 @@ void (*command_functions[])(char * arg) = {
   set_mqtt_client_id,
   set_mqtt_authentication,
   set_mqtt_topic_prefix,
+  topic_suffix_config,
   set_update_server_name,
   backup,
   set_no2_sensitivity,
@@ -478,6 +483,7 @@ char raw_instant_value_string[64] = {0};
 
 char MQTT_TOPIC_STRING[128] = {0};
 char MQTT_TOPIC_PREFIX[64] = "/orgs/wd/aqe/";
+uint8_t mqtt_suffix_enabled = 0;
 
 const char * header_row = "Timestamp,"
                "Temperature[degC],"
@@ -1207,6 +1213,18 @@ void initializeNewConfigSettings(void){
     configInject("mqttsrv mqtt.opensensors.io\r");
   }
   
+  // if the mqtt suffix enable is neither zero nor one, set it to one (enabled)
+  val = eeprom_read_byte((const uint8_t *) EEPROM_MQTT_TOPIC_SUFFIX_ENABLED);  
+  if(val == 0xFF){
+    if(!in_config_mode){
+      configInject("aqe\r");
+      in_config_mode = true;
+    }    
+    memset(command_buf, 0, 128);
+    strcat(command_buf, "mqttsuffix enable\r");        
+    configInject(command_buf);    
+  }
+  
   if(in_config_mode){
     configInject("exit\r");
   }
@@ -1548,6 +1566,7 @@ void help_menu(char * arg) {
       defaults_help_indent(); Serial.println(F("mqttauth enable"));        
       defaults_help_indent(); Serial.println(F("mqttuser wickeddevice"));  
       defaults_help_indent(); Serial.println(F("mqttprefix /orgs/wd/aqe/")); 
+      defaults_help_indent(); Serial.println(F("mqttsuffix enable")); 
       defaults_help_indent(); Serial.println(F("sampling 5, 160, 5"));
       defaults_help_indent(); Serial.println(F("ntpsrv disable"));
       defaults_help_indent(); Serial.println(F("ntpsrv pool.ntp.org"));
@@ -1695,6 +1714,13 @@ void help_menu(char * arg) {
       note_know_what_youre_doing();
       warn_could_break_upload();   
     }        
+    else if (strncmp("mqttsuffix", arg, 10) == 0) {
+      Serial.println(F("mqttsuffix <string>"));
+      get_help_indent(); Serial.println(F("<string> is 'enable' or 'disable'"));
+      get_help_indent(); Serial.println(F("if enabled, appends the device ID to each topic"));
+      note_know_what_youre_doing();
+      warn_could_break_upload();   
+    }    
     else if (strncmp("mqttport", arg, 8) == 0) {
       Serial.println(F("mqttport <number>"));
       get_help_indent(); Serial.println(F("<number> is the a number between 1 and 65535 inclusive"));
@@ -2054,6 +2080,20 @@ void print_eeprom_mqtt_topic_prefix(){
   print_eeprom_string((const char *) EEPROM_MQTT_TOPIC_PREFIX);
 }
 
+void print_eeprom_mqtt_topic_suffix(){
+  uint8_t val = eeprom_read_byte((uint8_t * ) EEPROM_MQTT_TOPIC_SUFFIX_ENABLED);
+  if(val == 1){
+    Serial.print("Enabled");
+  }
+  else if(val == 0){
+    Serial.print("Disabled");
+  }
+  else{
+    Serial.print("Uninitialized");
+  }
+  Serial.println();
+}
+
 void print_eeprom_mqtt_username(){
   print_eeprom_string((const char *) EEPROM_MQTT_USERNAME);
 }
@@ -2293,6 +2333,8 @@ void print_eeprom_value(char * arg) {
     print_eeprom_mqtt_authentication(); 
     Serial.print(F("    MQTT Topic Prefix: "));
     print_eeprom_mqtt_topic_prefix();
+    Serial.print(F("    MQTT Topic Suffix: "));
+    print_eeprom_mqtt_topic_suffix();      
     Serial.println(F(" +-------------------------------------------------------------+"));
     Serial.println(F(" | Credentials:                                                |"));
     Serial.println(F(" +-------------------------------------------------------------+"));
@@ -2404,6 +2446,7 @@ void restore(char * arg) {
     configInject("mqttauth enable\r");    
     configInject("mqttuser wickeddevice\r");
     configInject("mqttprefix /orgs/wd/aqe/\r");
+    configInject("mqttsuffix enable\r");
     configInject("sampling 5, 160, 5\r");   
     configInject("ntpsrv disable\r");
     configInject("ntpsrv pool.ntp.org\r");
@@ -3412,6 +3455,29 @@ void set_mqtt_topic_prefix(char * arg) {
     Serial.println(F("Error: MQTT prefix must be less than 64 characters in length"));
   }
 }
+
+void topic_suffix_config(char * arg) {
+  if(!configMemoryUnlocked(__LINE__)){
+    return;
+  }
+
+  lowercase(arg);
+  
+  if (strcmp(arg, "enable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_MQTT_TOPIC_SUFFIX_ENABLED, 1);
+    recomputeAndStoreConfigChecksum();
+  }
+  else if (strcmp(arg, "disable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_MQTT_TOPIC_SUFFIX_ENABLED, 0);
+    recomputeAndStoreConfigChecksum();
+  }
+  else {
+    Serial.print(F("Error: expected 'enable' or 'disable' but got '"));
+    Serial.print(arg);
+    Serial.println("'");
+  }
+}
+
 
 void set_mqtt_server(char * arg){
   if(!configMemoryUnlocked(__LINE__)){
@@ -5035,8 +5101,10 @@ boolean mqttReconnect(void){
      eeprom_read_block(mqtt_client_id, (const void *) EEPROM_MQTT_CLIENT_ID, 31);
      eeprom_read_block(mqtt_password, (const void *) EEPROM_MQTT_PASSWORD, 31);
      eeprom_read_block(MQTT_TOPIC_PREFIX, (const void *) EEPROM_MQTT_TOPIC_PREFIX, 63);
+     mqtt_suffix_enabled = eeprom_read_byte((const uint8_t *) EEPROM_MQTT_TOPIC_SUFFIX_ENABLED);
      mqtt_auth_enabled = eeprom_read_byte((const uint8_t *) EEPROM_MQTT_AUTH);
      mqtt_port = eeprom_read_dword((const uint32_t *) EEPROM_MQTT_PORT);
+     
      mqtt_client.setServer(mqtt_server_ip, mqtt_port);
      mqtt_client.setClient(esp);          
    }
@@ -5119,6 +5187,10 @@ boolean publishHeartbeat(){
   
   strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
   strcat(MQTT_TOPIC_STRING, "heartbeat");    
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");      
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);      
+  }
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
@@ -5174,6 +5246,11 @@ boolean publishTemperature(){
     
   strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
   strcat(MQTT_TOPIC_STRING, "temperature");    
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");      
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);      
+  }
+       
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
@@ -5217,6 +5294,10 @@ boolean publishHumidity(){
 
   strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
   strcat(MQTT_TOPIC_STRING, "humidity");    
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");      
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);      
+  }  
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
@@ -5522,6 +5603,10 @@ boolean publishNO2(){
   
   strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
   strcat(MQTT_TOPIC_STRING, "no2");    
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");      
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);      
+  } 
   return mqttPublish(MQTT_TOPIC_STRING, scratch);      
 }
 
@@ -5673,6 +5758,10 @@ boolean publishCO(){
 
   strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
   strcat(MQTT_TOPIC_STRING, "co");    
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");      
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);      
+  } 
   return mqttPublish(MQTT_TOPIC_STRING, scratch);      
 }
 
