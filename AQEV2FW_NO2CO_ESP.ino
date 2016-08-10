@@ -21,7 +21,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 1
-#define AQEV2FW_PATCH_VERSION 8
+#define AQEV2FW_PATCH_VERSION 9
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -494,7 +494,7 @@ const char * header_row = "Timestamp,"
                "CO[V],"  
                "Latitude[deg],"
                "Longitude[deg],"
-               "Altitude[m],";   
+               "Altitude[m]";   
 
 void setup() {
   boolean integrity_check_passed = false;
@@ -5136,6 +5136,8 @@ boolean mqttReconnect(void){
        return false;       
      }    
    }  
+
+   return loop_return_flag;
 }
 
 boolean mqttPublish(char * topic, char *str){
