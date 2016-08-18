@@ -1900,12 +1900,12 @@ void print_eeprom_connect_method(void) {
 }
 
 boolean valid_ssid_config(void) {
-  char ssid[32] = {0};
+  char ssid[33] = {0};
   boolean ssid_contains_only_printables = true;
 
   uint8_t connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);      
-  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 31);
-  for (uint8_t ii = 0; ii < 32; ii++) {
+  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 32);
+  for (uint8_t ii = 0; ii <= 32; ii++) {
     if (ssid[ii] == '\0') {
       break;
     }
@@ -1923,8 +1923,8 @@ boolean valid_ssid_config(void) {
 }
 
 void print_eeprom_ssid(void) {
-  char ssid[32] = {0};
-  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 31);
+  char ssid[33] = {0};
+  eeprom_read_block(ssid, (const void *) EEPROM_SSID, 32);
 
   if (!valid_ssid_config()) {
     Serial.println(F("No SSID currently configured."));
@@ -2978,15 +2978,15 @@ void set_ssid(char * arg) {
   
   // we've reserved 32-bytes of EEPROM for an SSID
   // so the argument's length must be <= 31
-  char ssid[32] = {0};
+  char ssid[33] = {0};
   uint16_t len = strlen(arg);
-  if (len < 32) {
+  if (len <= 32) {
     strncpy(ssid, arg, len);
     eeprom_write_block(ssid, (void *) EEPROM_SSID, 32);
     recomputeAndStoreConfigChecksum();
   }
   else {
-    Serial.println(F("Error: SSID must be less than 32 characters in length"));
+    Serial.println(F("Error: SSID must be less than 33 characters in length"));
   }
 }
 
@@ -4860,7 +4860,7 @@ bool displayConnectionDetails(void){
 }
 
 void reconnectToAccessPoint(void){
-  static char ssid[32] = {0};
+  static char ssid[33] = {0};
   static char network_password[32] = {0};
   static uint8_t connect_method = 0;
   static uint8_t network_security_mode = 0;
@@ -4870,7 +4870,7 @@ void reconnectToAccessPoint(void){
     first_access = false;
     connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
     network_security_mode = eeprom_read_byte((const uint8_t *) EEPROM_SECURITY_MODE);  
-    eeprom_read_block(ssid, (const void *) EEPROM_SSID, 31);
+    eeprom_read_block(ssid, (const void *) EEPROM_SSID, 32);
     eeprom_read_block(network_password, (const void *) EEPROM_NETWORK_PWD, 31); 
     eeprom_read_block(mac_address, (const void *) EEPROM_MAC_ADDRESS, 6);
   }
