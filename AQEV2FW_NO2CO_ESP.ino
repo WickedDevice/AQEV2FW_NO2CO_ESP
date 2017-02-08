@@ -89,7 +89,7 @@ float gps_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float gps_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
 unsigned long gps_age = TinyGPS::GPS_INVALID_AGE;
 
-#define MAX_SAMPLE_BUFFER_DEPTH (240) // 20 minutes @ 5 second resolution
+#define MAX_SAMPLE_BUFFER_DEPTH (180) // 15 minutes @ 5 second resolution
 #define NO2_SAMPLE_BUFFER         (0)
 #define CO_SAMPLE_BUFFER          (1)
 #define TEMPERATURE_SAMPLE_BUFFER (2)
@@ -134,6 +134,8 @@ baseline_voltage_t baseline_voltage_struct; // scratch space for a single baseli
 #define BACKLIGHT_ON_AT_STARTUP  (1)
 #define BACKLIGHT_ALWAYS_ON      (2)
 #define BACKLIGHT_ALWAYS_OFF     (3)
+
+boolean g_backlight_turned_on = false;
 
 // the software's operating mode
 #define MODE_CONFIG      (1)
@@ -471,7 +473,8 @@ const uint8_t heartbeat_waveform[NUM_HEARTBEAT_WAVEFORM_SAMPLES] PROGMEM = {
 };
 uint8_t heartbeat_waveform_index = 0;
 
-char scratch[512] = { 0 };  // scratch buffer, for general use
+#define SCRATCH_BUFFER_SIZE (512)
+char scratch[SCRATCH_BUFFER_SIZE] = { 0 };  // scratch buffer, for general use
 #define ESP8266_INPUT_BUFFER_SIZE (1500)
 uint8_t esp8266_input_buffer[ESP8266_INPUT_BUFFER_SIZE] = {0};     // sketch must instantiate a buffer to hold incoming data
                                                                    // 1500 bytes is way overkill for MQTT, but if you have it, may as well
@@ -514,119 +517,138 @@ void setup() {
   //  get_mirrored_config(tmp);  
   //  dump_config(tmp);
   //  Serial.println();
-  
-  integrity_check_passed = checkConfigIntegrity();
-  // if the integrity check failed, try and undo the damage using the mirror config, if it's valid
-  if(!integrity_check_passed){
-    Serial.println(F("Info: Startup config integrity check failed, attempting to restore from mirrored configuration."));
-    allowed_to_write_config_eeprom = true;
-    integrity_check_passed = mirrored_config_restore_and_validate(); 
-    allowed_to_write_config_eeprom = false;
-  }
-  else if(!mirrored_config_matches_eeprom_config()){
-    mirrored_config_mismatch = true;
-    Serial.println(F("Info: Startup config integrity check passed, but mirrored config differs, attempting to restore from mirrored configuration."));
-    allowed_to_write_config_eeprom = true;
-    integrity_check_passed = mirrored_config_restore_and_validate();
-    allowed_to_write_config_eeprom = false;
-  }     
-  
-  valid_ssid_passed = valid_ssid_config();  
-  uint8_t target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);  
-  boolean ok_to_exit_config_mode = true;   
-  
+    
   // if a software update introduced new settings
   // they should be populated with defaults as necessary
   initializeNewConfigSettings();
 
+  uint8_t target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);  
+  boolean ok_to_exit_config_mode = true;   
+
   // config mode processing loop
   do{
-    // check for initial integrity of configuration in eeprom
-    if(mode_requires_wifi(target_mode) && !valid_ssid_passed){
-      Serial.println(F("Info: No valid SSID configured, automatically falling back to CONFIG mode."));
-      configInject("aqe\r");
-      Serial.println();
-      setLCD_P(PSTR("PLEASE CONFIGURE"
-                    "NETWORK SETTINGS"));
-      mode = MODE_CONFIG;
-      allowed_to_write_config_eeprom = true;
-    }
-    else if(!integrity_check_passed && !mirrored_config_mismatch) { 
-      // if there was not a mirrored config mismatch and integrity check did not pass
-      // that means startup config integrity check failed, and restoring from mirror configuration failed
-      // to result in a valid configuration as well
-      //
-      // if, on the other hand, there was a mirrored config mismatch, the logic above *implies* that the eeprom config 
-      // is valid and that the mirrored config is not (yet) valid, so we shouldn't go into this case, and instead 
-      // we should drop into the else case (i.e. what normally happens on a startup with a valid configuration)
-      Serial.println(F("Info: Config memory integrity check failed, automatically falling back to CONFIG mode."));
-      configInject("aqe\r");
-      Serial.println();
-      setLCD_P(PSTR("CONFIG INTEGRITY"
-                    "  CHECK FAILED  "));
-      mode = MODE_CONFIG;
-      allowed_to_write_config_eeprom = true;   
-    }    
-    else {
-      // if the appropriate escape sequence is received within 8 seconds
-      // go into config mode
-      const long startup_time_period = 12000;
-      long start = millis();
-      long min_over = 100;
-      boolean got_serial_input = false;
-      Serial.println(F("Enter 'aqe' for CONFIG mode."));
-      Serial.print(F("OPERATIONAL mode automatically begins after "));
-      Serial.print(startup_time_period / 1000);
-      Serial.println(F(" secs of no input."));
-      setLCD_P(PSTR("CONNECT TERMINAL"
-                    "FOR CONFIG MODE "));
-                    
+    // if the appropriate escape sequence is received within 8 seconds
+    // go into config mode
+    const long startup_time_period = 12000;
+    long start = millis();
+    long min_over = 100;
+    boolean got_serial_input = false;
+    Serial.println(F("Enter 'aqe' for CONFIG mode."));
+    Serial.print(F("OPERATIONAL mode automatically begins after "));
+    Serial.print(startup_time_period / 1000);
+    Serial.println(F(" secs of no input."));
+    setLCD_P(PSTR("CONNECT TERMINAL"
+                  "FOR CONFIG MODE "));
+
+    g_backlight_turned_on = false; // clear the global flag
+    boolean soft_ap_config_activated = false;
+    current_millis = millis();     
+    while (current_millis < start + startup_time_period) { // can get away with this sort of thing at start up
       current_millis = millis();
-      while (current_millis < start + startup_time_period) { // can get away with this sort of thing at start up
-        current_millis = millis();
+
+      if(g_backlight_turned_on){
+        soft_ap_config_activated = true;
+        Serial.println();
+        Serial.println(F("Info: Entering SoftAP Mode for Configuration"));
+        break;
+      }
+
+      if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
+        static uint8_t num_touch_intervals = 0;
+        previous_touch_sampling_millis = current_millis;    
+        collectTouch();    
+        processTouchQuietly();
         
-        if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
-          static uint8_t num_touch_intervals = 0;
-          previous_touch_sampling_millis = current_millis;    
-          collectTouch();    
-          processTouchQuietly();
-          
-          num_touch_intervals++;
-          if(num_touch_intervals == 5){
-            petWatchdog(); 
-            num_touch_intervals = 0;
-          }
-          
-        }      
-      
-        if (Serial.available()) {
-          if (got_serial_input == false) {
-            Serial.println();
-          }
-          got_serial_input = true;
-  
-          start = millis(); // reset the timeout
-          if (CONFIG_MODE_GOT_INIT == configModeStateMachine(Serial.read(), false)) {
-            mode = MODE_CONFIG;
-            allowed_to_write_config_eeprom = true;
-            break;
-          }
+        num_touch_intervals++;
+        if(num_touch_intervals == 5){
+          petWatchdog(); 
+          num_touch_intervals = 0;
         }
-  
-        // output a countdown to the Serial Monitor
-        if (millis() - start >= min_over) {
-          uint8_t countdown_value_display = (startup_time_period - 500 - min_over) / 1000;
-          if (got_serial_input == false) {
-            Serial.print(countdown_value_display);
-            Serial.print(F("..."));
-          }
-          
-          updateCornerDot();
-          
-          min_over += 1000;
+        
+      }      
+    
+      if (Serial.available()) {
+        if (got_serial_input == false) {
+          Serial.println();
+        }
+        got_serial_input = true;
+
+        start = millis(); // reset the timeout
+        if (CONFIG_MODE_GOT_INIT == configModeStateMachine(Serial.read(), false)) {
+          mode = MODE_CONFIG;
+          allowed_to_write_config_eeprom = true;
+          break;
         }
       }
+
+      // output a countdown to the Serial Monitor
+      if (millis() - start >= min_over) {
+        uint8_t countdown_value_display = (startup_time_period - 500 - min_over) / 1000;
+        if (got_serial_input == false) {
+          Serial.print(countdown_value_display);
+          Serial.print(F("..."));
+        }
+        
+        updateCornerDot();
+        
+        min_over += 1000;
+      }
     }
+
+    if(soft_ap_config_activated){
+      allowed_to_write_config_eeprom = true;
+      configInject("aqe\r");
+      doSoftApModeConfigBehavior();
+      configInject("exit\r");
+    }
+    else{
+      integrity_check_passed = checkConfigIntegrity();
+      // if the integrity check failed, try and undo the damage using the mirror config, if it's valid
+      if(!integrity_check_passed){
+        Serial.println(F("Info: Startup config integrity check failed, attempting to restore from mirrored configuration."));
+        allowed_to_write_config_eeprom = true;
+        integrity_check_passed = mirrored_config_restore_and_validate(); 
+        allowed_to_write_config_eeprom = false;
+      }
+      else if(!mirrored_config_matches_eeprom_config()){
+        mirrored_config_mismatch = true;
+        Serial.println(F("Info: Startup config integrity check passed, but mirrored config differs, attempting to restore from mirrored configuration."));
+        allowed_to_write_config_eeprom = true;
+        integrity_check_passed = mirrored_config_restore_and_validate();
+        allowed_to_write_config_eeprom = false;
+      }     
+      
+      valid_ssid_passed = valid_ssid_config();  
+    
+      // check for initial integrity of configuration in eeprom
+      if(mode_requires_wifi(target_mode) && !valid_ssid_passed){
+        Serial.println(F("Info: No valid SSID configured, automatically falling back to CONFIG mode."));
+        configInject("aqe\r");
+        Serial.println();
+        setLCD_P(PSTR("PLEASE CONFIGURE"
+                      "NETWORK SETTINGS"));
+        mode = MODE_CONFIG;
+        allowed_to_write_config_eeprom = true;
+      }
+      else if(!integrity_check_passed && !mirrored_config_mismatch) { 
+        // if there was not a mirrored config mismatch and integrity check did not pass
+        // that means startup config integrity check failed, and restoring from mirror configuration failed
+        // to result in a valid configuration as well
+        //
+        // if, on the other hand, there was a mirrored config mismatch, the logic above *implies* that the eeprom config 
+        // is valid and that the mirrored config is not (yet) valid, so we shouldn't go into this case, and instead 
+        // we should drop into the else case (i.e. what normally happens on a startup with a valid configuration)
+        Serial.println(F("Info: Config memory integrity check failed, automatically falling back to CONFIG mode."));
+        configInject("aqe\r");
+        Serial.println();
+        setLCD_P(PSTR("CONFIG INTEGRITY"
+                      "  CHECK FAILED  "));
+        mode = MODE_CONFIG;
+        allowed_to_write_config_eeprom = true;   
+      }          
+    }
+    
+    
     Serial.println();
     delayForWatchdog();
     
@@ -4280,6 +4302,7 @@ void safe_dtostrf(float value, signed char width, unsigned char precision, char 
 }
 
 void backlightOn(void) {
+  g_backlight_turned_on = true; // set a global flag
   uint8_t backlight_behavior = eeprom_read_byte((uint8_t *) EEPROM_BACKLIGHT_STARTUP);
   if(backlight_behavior != BACKLIGHT_ALWAYS_OFF){
     digitalWrite(A6, HIGH);
@@ -5175,7 +5198,7 @@ boolean publishHeartbeat(){
   static uint32_t post_counter = 0;  
   uint8_t sample = pgm_read_byte(&heartbeat_waveform[heartbeat_waveform_index++]); 
   
-  snprintf(scratch, 511, 
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1, 
   "{"
   "\"serial-number\":\"%s\","
   "\"converted-value\":%d,"
@@ -5228,7 +5251,7 @@ boolean publishTemperature(){
   replace_nan_with_null(raw_value_string);
   replace_nan_with_null(raw_instant_value_string);
   
-  snprintf(scratch, 511,
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1,
     "{"
     "\"serial-number\":\"%s\","
     "\"converted-value\":%s,"
@@ -5278,7 +5301,7 @@ boolean publishHumidity(){
   replace_nan_with_null(raw_value_string);
   replace_nan_with_null(raw_instant_value_string);
   
-  snprintf(scratch, 511, 
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1, 
     "{"
     "\"serial-number\":\"%s\","    
     "\"converted-value\":%s,"
@@ -5341,7 +5364,7 @@ void collectTouch(void){
 }
 
 void processTouchVerbose(boolean verbose_output){
-  const uint32_t touch_event_threshold = 85UL;  
+  const uint32_t touch_event_threshold = 50UL;  
   static boolean first_time = true;
   static unsigned long touch_start_millis = 0UL;
   long backlight_interval = 60000L; 
@@ -5585,7 +5608,7 @@ boolean publishNO2(){
   replace_nan_with_null(compensated_value_string);
   replace_nan_with_null(raw_instant_value_string);
   
-  snprintf(scratch, 511, 
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1, 
     "{"
     "\"serial-number\":\"%s\","       
     "\"raw-value\":%s,"
@@ -5740,7 +5763,7 @@ boolean publishCO(){
   replace_nan_with_null(compensated_value_string);
   replace_nan_with_null(raw_instant_value_string);
   
-  snprintf(scratch, 511, 
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1, 
     "{"
     "\"serial-number\":\"%s\","      
     "\"raw-value\":%s,"
@@ -5974,7 +5997,7 @@ void printCsvDataLine(){
   clearTempBuffers();
   
   uint16_t len = 0;
-  uint16_t dataStringRemaining = 511;
+  uint16_t dataStringRemaining = SCRATCH_BUFFER_SIZE-1;
   
   if(first){
     first = false;      
@@ -6265,7 +6288,7 @@ void downloadFile(char * hostname, uint16_t port, char * filename, void (*respon
   esp.connect(hostname, port);
   if (esp.connected()) {   
     memset(scratch, 0, 512);
-    snprintf(scratch, 511, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);        
+    snprintf(scratch, SCRATCH_BUFFER_SIZE-1, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);        
     esp.print(scratch);
     //Serial.print(scratch);    
   } else {
@@ -6876,6 +6899,105 @@ void getNetworkTime(void){
   }
 }
 
+void doSoftApModeConfigBehavior(void){  
+  
+  randomSeed(millis());
+  char random_password[16] = {0}; // 8 characters randomly chosen
+  const uint8_t random_password_length = 8;;
+  static const char whitelist[] PROGMEM = {
+    '2',  '3',  '4',  '5',  '6',  '7',  '8',  '9',  
+    'A',  'B',  'C',  'D',  'E',  'F',  'G',  'H',  
+    'J',  'K',  'L',  'M',  'N',  'P',  'R',  'S',
+    'T',  'U',  'V',  'W',  'X',  'Y',  'Z',  'a',  
+    'b',  'c',  'd',  'e',  'f',  'g',  'h',  'i',  
+    'j',  'k',  'm',  'n',  'o',  'p',  'q',  'r',  
+    's',  't',  'u',  'v',  'w',  'x',  'y',  'z'
+  };
+  uint8_t _mac_address[6] = {0};
+  eeprom_read_block((void *)_mac_address, (const void *) EEPROM_MAC_ADDRESS, 6);
+  char egg_ssid[16] = {0};
+  sprintf(egg_ssid, "egg-%02x%02x%02x", _mac_address[3], _mac_address[4], _mac_address[5]);
+
+  uint8_t ii = 0;
+  while(ii < random_password_length){
+    uint8_t idx = random(0, 'z' - '0' + 1);
+    char c = (char) ('0' + idx); 
+    
+    // if it's in the white list allow it
+    boolean in_whitelist = false;
+    for(uint8_t jj = 0; jj < sizeof(whitelist); jj++){
+      char wl_char = pgm_read_byte(&(whitelist[jj]));      
+      if(wl_char == c){
+        in_whitelist = true;
+        break;
+      }
+    }
+
+    if(in_whitelist){
+      random_password[ii++] = c;     
+    }
+  }
+
+  clearLCD();
+  updateLCD(egg_ssid, 0);   
+  updateLCD(random_password, 1);
+    
+  uint32_t softap_start_time_ms = millis();
+  uint32_t max_softap_time_ms = 60UL * 2UL * 1000UL; // stay in softap for 2 minutes max
+  uint32_t time_in_softap_ms = 0;
+  boolean settings_accepted_via_softap = false;
+  const uint16_t softap_http_port = 80;
+  Serial.print(F("Will spin here for ... "));
+  Serial.println(max_softap_time_ms);
+  if(esp.setNetworkMode(3)){ // means softAP mode
+    Serial.println(F("Info: Enabled Soft AP"));    
+    if(esp.configureSoftAP(egg_ssid, random_password, 5, 3)){ // channel = 5, sec = WPA      
+      // open a port and listen for config data messages, for up to two minutes
+      if(esp.listen(softap_http_port)){
+        Serial.println(F("Info: Listening for connections..."));        
+        unsigned long previousMillis = 0;
+        const long interval = 1000;
+        uint32_t counter = 1;
+        while(time_in_softap_ms < max_softap_time_ms){
+          unsigned long currentMillis = millis();
+
+          if (currentMillis - previousMillis >= interval) {            
+            previousMillis = currentMillis;
+            Serial.println(counter++);
+          }
+          
+          // pay attention to incoming traffic
+          if(esp.available()){
+            Serial.print(esp.read());
+          }
+           
+        }
+  
+        if(settings_accepted_via_softap){
+          Serial.println(F("Info: Exiting Soft AP Mode, changes were accepted"));           
+        }
+        else{
+          Serial.println(F("Info: Exiting Soft AP Mode, no changes were made"));           
+        }              
+      }
+      else{
+        Serial.print(F("Error: Failed to start TCP server on port "));
+        Serial.println(softap_http_port);
+      }
+      
+      esp.setNetworkMode(1);
+    }
+    else{
+      Serial.println(F("Error: Failed to configure Soft AP"));
+    }
+  }
+  else{
+    Serial.println(F("Error: Failed to start Soft AP Mode"));  
+  }  
+
+  Serial.println(F("Info: Exiting SoftAP Mode"));
+}
+
 /*
 void dump_config(uint8_t * buf){    
   uint16_t addr = 0;
@@ -6897,4 +7019,4 @@ void dump_config(uint8_t * buf){
     }
   }
 }
-*/
+*/ 
