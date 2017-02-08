@@ -17,6 +17,7 @@
 #include <math.h>
 #include <TinyGPS.h>
 #include <SoftwareSerial.h>
+#include <jsmn.h>
 
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
@@ -6916,7 +6917,7 @@ void doSoftApModeConfigBehavior(void){
   uint8_t _mac_address[6] = {0};
   eeprom_read_block((void *)_mac_address, (const void *) EEPROM_MAC_ADDRESS, 6);
   char egg_ssid[16] = {0};
-  sprintf(egg_ssid, "egg-%02x%02x%02x", _mac_address[3], _mac_address[4], _mac_address[5]);
+  sprintf(egg_ssid, "egg-%02x%02x%02x", _mac_address[3], _mac_address[4], _mac_address[5]);  
 
   uint8_t ii = 0;
   while(ii < random_password_length){
@@ -6941,36 +6942,112 @@ void doSoftApModeConfigBehavior(void){
   clearLCD();
   updateLCD(egg_ssid, 0);   
   updateLCD(random_password, 1);
-    
-  uint32_t softap_start_time_ms = millis();
-  uint32_t max_softap_time_ms = 60UL * 2UL * 1000UL; // stay in softap for 2 minutes max
-  uint32_t time_in_softap_ms = 0;
+  
+  uint32_t seconds_remaining_in_softap_mode = 2UL * 60UL; // stay in softap for 2 minutes max  
   boolean settings_accepted_via_softap = false;
   const uint16_t softap_http_port = 80;
-  Serial.print(F("Will spin here for ... "));
-  Serial.println(max_softap_time_ms);
+  char ssid[33] = {0};
+  char pwd[33] = {0};
+  
   if(esp.setNetworkMode(3)){ // means softAP mode
     Serial.println(F("Info: Enabled Soft AP"));    
     if(esp.configureSoftAP(egg_ssid, random_password, 5, 3)){ // channel = 5, sec = WPA      
       // open a port and listen for config data messages, for up to two minutes
       if(esp.listen(softap_http_port)){
-        Serial.println(F("Info: Listening for connections..."));        
+        Serial.print(F("Info: Listening for connections on port "));
+        Serial.print(softap_http_port);
+        Serial.println(F("..."));
         unsigned long previousMillis = 0;
-        const long interval = 1000;
-        uint32_t counter = 1;
-        while(time_in_softap_ms < max_softap_time_ms){
+        const long interval = 1000;        
+        uint16_t scratch_idx = 0;
+        boolean got_opening_brace = false;        
+        boolean got_closing_brace = false;
+                
+        while((seconds_remaining_in_softap_mode != 0) && (!settings_accepted_via_softap)){
           unsigned long currentMillis = millis();
 
           if (currentMillis - previousMillis >= interval) {            
             previousMillis = currentMillis;
-            Serial.println(counter++);
+            if(seconds_remaining_in_softap_mode != 0){
+              seconds_remaining_in_softap_mode--;
+            }            
           }
           
           // pay attention to incoming traffic
-          if(esp.available()){
-            Serial.print(esp.read());
-          }
-           
+          while(esp.available()){
+            char c = esp.read();
+            if(got_opening_brace){
+              if(c == '}'){
+                got_closing_brace = true;    
+                scratch[scratch_idx++] = c;
+                break;
+              }
+              else{
+                if(scratch_idx < SCRATCH_BUFFER_SIZE - 1){
+                  scratch[scratch_idx++] = c;                  
+                }
+                else{
+                  Serial.println("Warning: scratch buffer out of memory");
+                }
+              }
+            }
+            else if(c == '{'){              
+              got_opening_brace = true;
+              scratch[scratch_idx++] = c;
+            }            
+          }                     
+
+          if(got_closing_brace){
+            Serial.println("Message Body: ");
+            Serial.println(scratch);  
+            
+            // send back an HTTP response 
+            // Then send a few headers to identify the type of data returned and that
+            // the connection will not be held open.                            
+            char response_template[] PROGMEM = "HTTP/1.1 200 OK\r\n"         
+              "Content-Type: application/json; charset=utf-8\r\n"
+              "Connection: close\r\n"
+              "Server: air quality egg\r\n"
+              "Content-Length: %d\r\n"
+              "Access-Control-Allow-Origin: *\r\n"
+              "\r\n"
+              "%s";
+              
+            const char good_response_body_template[] PROGMEM = "{\"serial\":\"%s\"}";
+            const char bad_response_body_template[] PROGMEM = "{\"error\":\"no ssid and password supplied\"}";
+            char response_body[64] = {0};              
+            char serial_number[32] = {0};
+            eeprom_read_block(serial_number, (const void *) EEPROM_MQTT_CLIENT_ID, 31);
+            const char model_type[16] = "A";
+            
+            if(parseConfigurationMessageBody(scratch, &(ssid[0]), &(pwd[0]))){
+              Serial.print("SSID: "); Serial.println(ssid);
+              Serial.print("PWD: "); Serial.println(pwd);
+
+              sprintf(response_body, good_response_body_template, serial_number);             
+              memset(scratch, 0, SCRATCH_BUFFER_SIZE);              
+              sprintf(scratch, response_template, strlen(response_body), response_body);
+              settings_accepted_via_softap = true;
+            }
+            else{
+              // send back an HTTP response indicating an error              
+              memset(scratch, 0, SCRATCH_BUFFER_SIZE);              
+              sprintf(scratch, response_template, strlen(bad_response_body_template), bad_response_body_template);              
+            }
+            Serial.print("Responding With: ");
+            Serial.println(scratch);  
+            esp.print(scratch);
+
+            // and wait 100ms to make sure it gets back to the caller
+            delay(100); 
+            
+            memset(scratch, 0, SCRATCH_BUFFER_SIZE);
+            scratch_idx = 0;
+
+            // if the parse failed we're back to waiting for a message body
+            got_closing_brace = false;
+            got_opening_brace = false;            
+          }          
         }
   
         if(settings_accepted_via_softap){
@@ -6984,7 +7061,7 @@ void doSoftApModeConfigBehavior(void){
         Serial.print(F("Error: Failed to start TCP server on port "));
         Serial.println(softap_http_port);
       }
-      
+
       esp.setNetworkMode(1);
     }
     else{
@@ -6998,25 +7075,49 @@ void doSoftApModeConfigBehavior(void){
   Serial.println(F("Info: Exiting SoftAP Mode"));
 }
 
-/*
-void dump_config(uint8_t * buf){    
-  uint16_t addr = 0;
-  uint8_t ii = 0;
-  while(addr < EEPROM_CONFIG_MEMORY_SIZE){
-    if(ii == 0){
-      Serial.print(addr, HEX);
-      Serial.print(F(": ")); 
-    }    
+boolean parseConfigurationMessageBody(char * body, char * ssid, char * pwd){
+  jsmn_parser parser;
+  jsmntok_t tokens[32];
+  jsmn_init(&parser);
+
+  boolean found_ssid = false;
+  boolean found_pwd = false;
+  
+  uint16_t r = jsmn_parse(&parser, body, strlen(body), tokens, 10);
+  Serial.print("Found ");
+  Serial.print(r);
+  Serial.println(" JSON tokens");
+  char key[32] = {0};
+  char value[32] = {0};
+  for(uint8_t ii = 1; ii < r; ii+=2){    
+    memset(key, 0, 32);
+    memset(value, 0, 32);
+    uint16_t keylen = tokens[ii].end - tokens[ii].start;
+    uint16_t valuelen = tokens[ii+1].end - tokens[ii+1].start;
+
+    if(keylen < 32){
+      strncpy(key, body + tokens[ii].start, keylen);      
+    }
+
+    if(valuelen < 32){
+      strncpy(value, body + tokens[ii+1].start, valuelen);
+    }
     
-    Serial.print(buf[addr], HEX);
-    Serial.print(F("\t"));
-    
-    addr++;
-    ii++;
-    if(ii == 32){
-      Serial.println();
-      ii = 0; 
+    Serial.print(key);
+    Serial.print(" => ");
+    Serial.print(value);
+    Serial.println();   
+
+    if(strcmp(key, "ssid") == 0){
+      found_ssid = true;
+      strcpy(ssid, value);
+    }
+    else if(strcmp(key, "pwd") == 0){
+      found_pwd = true;
+      strcpy(pwd, value);
     }
   }
+
+  return found_ssid && found_pwd;
 }
-*/ 
+
