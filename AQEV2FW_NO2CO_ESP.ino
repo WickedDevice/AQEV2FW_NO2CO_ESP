@@ -681,8 +681,7 @@ void setup() {
         Serial.println();
         setLCD_P(PSTR("CONFIG INTEGRITY"
                       "  CHECK FAILED  "));
-        mode = MODE_CONFIG;
-        allowed_to_write_config_eeprom = true;   
+        mode = MODE_CONFIG;        
       }          
     }
     
@@ -691,9 +690,11 @@ void setup() {
     delayForWatchdog();
     
     if (mode == MODE_CONFIG) {      
+      allowed_to_write_config_eeprom = true;   
       const uint32_t idle_timeout_period_ms = 1000UL * 60UL * 5UL; // 5 minutes
       uint32_t idle_time_ms = 0;
       Serial.println(F("-~=* In CONFIG Mode *=~-"));
+      
       if(integrity_check_passed && valid_ssid_passed){
         setLCD_P(PSTR("  CONFIG MODE"));
       }          
@@ -1423,6 +1424,9 @@ uint8_t configModeStateMachine(char b, boolean reset_buffers) {
       // deal with commands that can legitimately have no arguments first
       if (strncmp("help", lower_buf, 4) == 0) {
         help_menu(first_arg);
+      }
+      else if(strncmp("pwd", lower_buf, 3) == 0) {
+        set_network_password(first_arg);
       }
       else if (first_arg != 0) {
         //Serial.print(F("Received Command: \""));
@@ -2750,9 +2754,11 @@ void set_network_password(char * arg) {
   // we've reserved 32-bytes of EEPROM for a network password
   // so the argument's length must be <= 31
   char password[32] = {0};
-  uint16_t len = strlen(arg);
+  uint16_t len = arg ? strlen(arg) : 0;
   if (len < 32) {
-    strncpy(password, arg, len);
+    if(arg){
+      strncpy(password, arg, len);
+    }
     eeprom_write_block(password, (void *) EEPROM_NETWORK_PWD, 32);
     recomputeAndStoreConfigChecksum();
   }
@@ -2769,6 +2775,7 @@ void set_network_security_mode(char * arg) {
   boolean valid = true;
   if (strncmp("open", arg, 4) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 0);
+    set_network_password(NULL);
   }
   else if (strncmp("wep", arg, 3) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 1);
@@ -4532,7 +4539,7 @@ void displayRSSI(void){
   Serial.print(num_results_found);
   Serial.println(F(" networks"));
   
-  Serial.print(F("Info: Found Access Point \""));
+  Serial.print(F("Info: Access Point \""));
   Serial.print(ssid);
   Serial.print(F("\", ")); 
   if(foundSSID){
@@ -4564,6 +4571,7 @@ void displayRSSI(void){
   }
   else{
     Serial.println(F("Not Found.")); 
+    Serial.println(F("Info: Attempting to connect anyway."));
     updateLCD("NOT FOUND", 1);
     lcdFrownie(15, 1); // lower right corner
     ERROR_MESSAGE_DELAY();
