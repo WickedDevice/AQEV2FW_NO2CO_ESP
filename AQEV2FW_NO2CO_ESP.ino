@@ -6868,8 +6868,14 @@ void doSoftApModeConfigBehavior(void){
             
             eeprom_read_block(serial_number, (const void *) EEPROM_MQTT_CLIENT_ID, 31);
             eeprom_read_block(ssid, (const void *) EEPROM_SSID, 32);
+
+            int16_t l_alt = (int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS);
+            float f_alt = 0.0f / 0.0f; // should result in nan (on purpose)
+            if(l_alt != -1){
+              f_alt = 1.0f * l_alt;
+            }
             
-            floatToJsString(eeprom_read_float((float *) EEPROM_ALTITUDE_METERS), userAlt, 2);
+            floatToJsString(f_alt, userAlt, 2);
             floatToJsString(eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG), userLat, 6);
             floatToJsString(eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG), userLng, 6);
             
@@ -7055,6 +7061,9 @@ boolean parseConfigurationMessageBody(char * body){
     }
     else if(strcmp(key, "lng") == 0){
       set_user_longitude(value);
+    }
+    else if(strcmp(key, "alt") == 0){
+      altitude_command(value);
     }
     else if(strcmp(key, "temp_unit") == 0){
       set_temperature_units(value);
