@@ -50,6 +50,7 @@ char mqtt_client_id[32] = {0};
 
 boolean wifi_can_connect = false;
 boolean user_location_override = false;
+boolean gps_installed = false;
 
 RTC_DS3231 rtc;
 SdFat SD;
@@ -293,6 +294,9 @@ void set_update_server_name(char * arg);
 void no2_baseline_voltage_characterization_command(char * arg);
 void co_baseline_voltage_characterization_command(char * arg);
 void topic_suffix_config(char * arg);
+void set_user_latitude(char * arg);
+void set_user_longitude(char * arg);
+void set_user_location_enable(char * arg);
 
 // Note to self:
 //   When implementing a new parameter, ask yourself:
@@ -355,6 +359,9 @@ const char cmd_string_ntpsrv[] PROGMEM      = "ntpsrv     ";
 const char cmd_string_tz_off[] PROGMEM      = "tz_off     ";
 const char cmd_string_no2_blv[] PROGMEM     = "no2_blv    ";
 const char cmd_string_co_blv[] PROGMEM      = "co_blv     ";
+const char cmd_string_usr_lat[] PROGMEM     = "latitude   ";
+const char cmd_string_usr_lng[] PROGMEM     = "longitude  ";
+const char cmd_string_usr_loc_en[] PROGMEM  = "location   ";
 const char cmd_string_null[] PROGMEM        = "";
 
 PGM_P const commands[] PROGMEM = {
@@ -402,6 +409,9 @@ PGM_P const commands[] PROGMEM = {
   cmd_string_tz_off,
   cmd_string_no2_blv,
   cmd_string_co_blv, 
+  cmd_string_usr_lat,
+  cmd_string_usr_lng,
+  cmd_string_usr_loc_en,
   cmd_string_null
 };
 
@@ -450,6 +460,9 @@ void (*command_functions[])(char * arg) = {
   set_ntp_timezone_offset,
   no2_baseline_voltage_characterization_command,
   co_baseline_voltage_characterization_command,
+  set_user_latitude,
+  set_user_longitude,
+  set_user_location_enable,
   0
 };
 
@@ -707,6 +720,14 @@ void setup() {
           collectTouch();    
           processTouchQuietly();  
         }
+
+        // check to determine if we have a GPS
+        while(!gps_installed && gpsSerial.available()){
+          char c = gpsSerial.read();
+          if(c == '$'){
+            gps_installed = true;
+          }
+        }        
   
         // stuck in this loop until the command line receives an exit command
         if(mode != MODE_CONFIG){
@@ -860,15 +881,21 @@ void setup() {
 
 void loop() {  
   current_millis = millis();
-
+  
   // whenever you come through loop, process a GPS byte if there is one
   // will need to test if this keeps up, but I think it will      
   if(!gps_disabled){       
-    while(gpsSerial.available()){
-      if(gps.encode(gpsSerial.read())){
+    while(gpsSerial.available()){            
+      char c = gpsSerial.read();
+
+      if(c == '$'){
+        gps_installed = true;
+      }
+      
+      if(gps.encode(c)){
         gps.f_get_position(&gps_latitude, &gps_longitude, &gps_age);
         gps_altitude = gps.f_altitude();
-        updateGpsStrings();
+        updateGpsStrings();        
         break;
       }
     }
@@ -1833,6 +1860,28 @@ void print_altitude_settings(void){
   }
 }
 
+void print_latitude_settings(void){
+  int16_t l_latitude = (int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LATITUDE_DEG);
+  if(l_latitude != -1){
+    Serial.print(l_latitude);
+    Serial.println(F(" degrees"));  
+  }
+  else{
+    Serial.println("Not set");
+  }
+}
+
+void print_longitude_settings(void){
+  int16_t l_longitude = (int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LONGITUDE_DEG);
+  if(l_longitude != -1){
+    Serial.print(l_longitude);
+    Serial.println(F(" degrees"));  
+  }
+  else{
+    Serial.println("Not set");
+  }
+}
+
 void print_eeprom_backlight(){   
   uint16_t backlight_duration = eeprom_read_word((uint16_t *) EEPROM_BACKLIGHT_DURATION);
   uint8_t backlight_startup = eeprom_read_byte((uint8_t *) EEPROM_BACKLIGHT_STARTUP);
@@ -1942,7 +1991,13 @@ void print_eeprom_value(char * arg) {
   } 
   else if(strncmp(arg, "altitude", 8) == 0) {
     Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS));    
-  }         
+  }
+  else if(strncmp(arg, "latitude", 8) == 0) {
+    Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LATITUDE_DEG));    
+  }
+  else if(strncmp(arg, "longitude", 8) == 0) {
+    Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LONGITUDE_DEG));    
+  }             
   else if(strncmp(arg, "settings", 8) == 0) {   
     // print all the settings to the screen in an orderly fashion
     Serial.println(F(" +-------------------------------------------------------------+"));
@@ -1952,8 +2007,6 @@ void print_eeprom_value(char * arg) {
     print_eeprom_operational_mode(eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE));
     Serial.print(F("    Temperature Units: "));
     print_eeprom_temperature_units();
-    Serial.print(F("    Altitude: "));
-    print_altitude_settings();
     Serial.print(F("    Backlight Settings: "));
     print_eeprom_backlight();
     Serial.print(F("    Sensor Sampling Interval: "));
@@ -1965,6 +2018,23 @@ void print_eeprom_value(char * arg) {
     Serial.print(F("    Sensor Reporting Interval: "));
     Serial.print(eeprom_read_word((uint16_t *) EEPROM_REPORTING_INTERVAL));  
     Serial.println(F(" seconds"));
+
+    Serial.println(F(" +-------------------------------------------------------------+"));
+    Serial.println(F(" | Location Settings:                                          |"));
+    Serial.println(F(" +-------------------------------------------------------------+"));
+    Serial.print(F("    User Location: "));
+    if(eeprom_read_byte((uint8_t *) EEPROM_USER_LOCATION_EN) == 1){
+      Serial.println(F("Enabled"));
+    }
+    else{
+      Serial.println(F("Disabled"));
+    }  
+    Serial.print(F("    User Latitude: "));
+    print_latitude_settings();
+    Serial.print(F("    User Longitude: "));
+    print_longitude_settings();
+    Serial.print(F("    User Altitude: "));
+    print_altitude_settings();    
     
     Serial.println(F(" +-------------------------------------------------------------+"));
     Serial.println(F(" | Network Settings:                                           |"));
@@ -2133,7 +2203,7 @@ void restore(char * arg) {
     configInject("restore key\r");
     configInject("restore no2\r");
     configInject("restore co\r");
-    configInject("restore mac\r");
+    configInject("restore mac\r");    
 
     eeprom_write_block(blank, (void *) EEPROM_SSID, 32); // clear the SSID
     eeprom_write_block(blank, (void *) EEPROM_NETWORK_PWD, 32); // clear the Network Password
@@ -3127,6 +3197,38 @@ void set_mqtt_topic_prefix(char * arg) {
   else {
     Serial.println(F("Error: MQTT prefix must be less than 64 characters in length"));
   }
+}
+
+void set_user_latitude(char * arg){
+  set_float_param(arg, (float *) EEPROM_USER_LATITUDE_DEG, NULL);
+}
+
+void set_user_longitude(char * arg){
+  set_float_param(arg, (float *) EEPROM_USER_LONGITUDE_DEG, NULL);  
+}
+
+void set_user_location_enable(char * arg){
+  if(!configMemoryUnlocked(__LINE__)){
+    return;
+  }
+
+  lowercase(arg);
+  
+  if (strcmp(arg, "enable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_USER_LOCATION_EN, 1);    
+    recomputeAndStoreConfigChecksum();
+  }
+  else if (strcmp(arg, "disable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_USER_LOCATION_EN, 0);
+    recomputeAndStoreConfigChecksum();
+  }
+  else {
+    Serial.print(F("Error: expected 'enable' or 'disable' but got '"));
+    Serial.print(arg);
+    Serial.println("'");
+  }  
+
+  user_location_override = eeprom_read_byte((uint8_t *) EEPROM_USER_LOCATION_EN) == 1 ? true : false;
 }
 
 void topic_suffix_config(char * arg) {
@@ -6647,6 +6749,14 @@ void doSoftApModeConfigBehavior(void){
             collectTouch();    
             processTouchQuietly();                            
           }      
+
+          // check to determine if we have a GPS
+          while(!gps_installed && gpsSerial.available()){
+            char c = gpsSerial.read();
+            if(c == '$'){
+              gps_installed = true;
+            }
+          }
           
           // pay attention to incoming traffic          
           while(esp.available()){
@@ -6724,8 +6834,8 @@ void doSoftApModeConfigBehavior(void){
             const char true_string[] = "true";
             const char false_string[] = "false";
             
-            char * hasGPS = (char *) false_string; // TODO: make this conditional
-            char * useGPS = user_location_override ? (char *) true_string : (char *) false_string;
+            char * hasGPS = gps_installed ? (char *) true_string : (char *) false_string;
+            char * useGPS = user_location_override ? (char *) false_string : (char *) true_string;
             char * wifiConn = wifi_can_connect ? (char *) true_string : (char *) false_string;
                         
             char tempUnit[2] = {0};
@@ -6765,6 +6875,34 @@ void doSoftApModeConfigBehavior(void){
             got_opening_brace = false;            
           }          
         }
+
+        // if we got an explicit command to exit softap mode. 
+        // commit configuration to mirrored backup if there were changes.
+        // this is different behavior from CLI mode, which requires
+        // successful connection to the target network to commit the configuration.
+        if(explicit_exit_softap){
+          if(!mirrored_config_matches_eeprom_config()){
+            Serial.println(F("Info: Detected configuration changes"));
+            if(checkConfigIntegrity()){
+              Serial.print(F("Info: Committing configuration changes..."));
+              commitConfigToMirroredConfig();
+              Serial.println(F("OK"));
+            }
+            else {
+              Serial.print(F("Error: Integrity check failed, discarding changes..."));
+              if(mirrored_config_restore_and_validate()){
+                Serial.println(F("OK"));
+              }
+              else{
+                Serial.println(F("Failed"));
+              }
+            }
+          }
+          else{
+            Serial.println("Info: No configuration changes detected");
+          }
+        }
+        
       }
       else{
         Serial.print(F("Error: Failed to start TCP server on port "));
@@ -6826,16 +6964,16 @@ boolean parseConfigurationMessageBody(char * body){
   char pwd[33] = {0};
   
   for(uint8_t ii = 1; ii < r; ii+=2){    
-    memset(key, 0, 32);
-    memset(value, 0, 32);
+    memset(key, 0, 33);
+    memset(value, 0, 33);
     uint16_t keylen = json_tokens[ii].end - json_tokens[ii].start;
     uint16_t valuelen = json_tokens[ii+1].end - json_tokens[ii+1].start;
 
-    if(keylen < 32){
+    if(keylen <= 32){
       strncpy(key, body + json_tokens[ii].start, keylen);      
     }
 
-    if(valuelen < 32){
+    if(valuelen <= 32){
       strncpy(value, body + json_tokens[ii+1].start, valuelen);
     }
 
@@ -6855,6 +6993,14 @@ boolean parseConfigurationMessageBody(char * body){
     }
     else if((strcmp(key, "exit") == 0) && (strcmp(value, "true") == 0)){
       found_exit = true;
+    }
+    else if(strcmp(key, "use_gps") == 0){
+      if(strcmp(value, "true") == 0){
+        set_user_location_enable("disable");
+      }
+      else if(strcmp(value, "false") == 0){
+        set_user_location_enable("enable");
+      }
     }
 
     if(!handled_ssid_pwd && found_ssid && found_pwd){
