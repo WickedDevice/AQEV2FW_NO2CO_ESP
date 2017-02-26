@@ -6923,7 +6923,8 @@ void doSoftApModeConfigBehavior(void){
             seconds_remaining_in_softap_mode = default_seconds_remaining_in_softap_mode;
             
             // and wait 100ms to make sure it gets back to the caller
-            delay(500); 
+            delay(100); 
+            esp.stop();
             
             clearTempBuffers();                 
             // if the parse failed we're back to waiting for a message body
