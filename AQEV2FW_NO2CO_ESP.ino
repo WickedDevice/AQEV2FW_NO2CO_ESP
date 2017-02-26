@@ -6521,8 +6521,10 @@ void rtcClearOscillatorStopFlag(void){
 
 /****** GPS SUPPORT FUNCTIONS ******/
 void updateGpsStrings(void){
-  const char * gps_lat_lng_field_mqtt_template = ",\"latitude\":%.6f,\"longitude\":%.6f";
-  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%.6f,\"longitude\":%.6f,\"altitude\":%.2f"; 
+//  const char * gps_lat_lng_field_mqtt_template = ",\"latitude\":%.6f,\"longitude\":%.6f";
+//  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%.6f,\"longitude\":%.6f,\"altitude\":%.2f"; 
+  const char * gps_lat_lng_field_mqtt_template = ",\"__location\":{\"lat\":%.6f,\"lon\":%.6f}"; 
+  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"__location\":{\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.2f}"; 
   const char * gps_lat_lng_field_csv_template = ",%.6f,%.6f,---";
   const char * gps_lat_lng_alt_field_csv_template  = ",%.6f,%.6f,%.2f";   
 
@@ -6531,13 +6533,13 @@ void updateGpsStrings(void){
     first = false;
     float tmp = eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG);
     // Serial.println(tmp,6);    
-    if(!isnan(tmp) && (tmp >= -180.0f) && (tmp <= 180.0f)){
+    if(!isnan(tmp) && (tmp >= -90.0f) && (tmp <= 90.0f)){
       user_latitude = tmp;
     }
     
     tmp = eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG);
     // Serial.println(tmp,6);
-    if(!isnan(tmp) && (tmp >= -90.0f) && (tmp <= 90.0f)){
+    if(!isnan(tmp) && (tmp >= -180.0f) && (tmp <= 180.0f)){
       user_longitude = tmp;
     }
 
