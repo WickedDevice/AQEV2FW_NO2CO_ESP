@@ -5245,11 +5245,18 @@ float pressure_scale_factor(void){
   float ret = 1.0f;
   
   static boolean first_access = true;
-  static int16_t altitude_meters = 0.0f;
+  static int16_t user_altitude_meters = 0.0f;
   
   if(first_access){
     first_access = false;
-    altitude_meters = (int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS);
+    user_altitude_meters = (int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS);       
+  }
+
+  int16_t altitude_meters = user_altitude_meters;
+  if(!user_location_override && (gps_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE)){
+    altitude_meters = (int16_t) gps_altitude;
+    // hang on to the last gps based altitude in this case
+    user_altitude_meters = altitude_meters;
   }
 
   if(altitude_meters != -1){
