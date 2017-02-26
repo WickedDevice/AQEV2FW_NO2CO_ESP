@@ -888,7 +888,11 @@ void loop() {
   
   // whenever you come through loop, process a GPS byte if there is one
   // will need to test if this keeps up, but I think it will      
-  if(!gps_disabled){       
+  if(user_location_override){
+    // hardware doesn't matter in this case
+    updateGpsStrings();
+  }
+  else if(!gps_disabled){       
     while(gpsSerial.available()){            
       char c = gpsSerial.read();
 
@@ -903,12 +907,7 @@ void loop() {
         break;
       }
     }
-  }
-  else if(user_location_override){
-    // hardware doesn't matter in this case
-    updateGpsStrings();
-  }
-  
+  }   
   
   if(current_millis - previous_sensor_sampling_millis >= sampling_interval){
     suspendGpsProcessing();
@@ -1870,8 +1869,9 @@ void print_altitude_settings(void){
 
 void print_latitude_settings(void){
   int16_t l_latitude = (int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LATITUDE_DEG);
+  float f_latitude = eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG);
   if(l_latitude != -1){
-    Serial.print(l_latitude);
+    Serial.print(f_latitude, 6);
     Serial.println(F(" degrees"));  
   }
   else{
@@ -1881,8 +1881,9 @@ void print_latitude_settings(void){
 
 void print_longitude_settings(void){
   int16_t l_longitude = (int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LONGITUDE_DEG);
+  float f_longitude = eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG);
   if(l_longitude != -1){
-    Serial.print(l_longitude);
+    Serial.print(f_longitude, 6);
     Serial.println(F(" degrees"));  
   }
   else{
@@ -2001,10 +2002,10 @@ void print_eeprom_value(char * arg) {
     Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS));    
   }
   else if(strncmp(arg, "latitude", 8) == 0) {
-    Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LATITUDE_DEG));    
+    Serial.println((int16_t) eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG));    
   }
   else if(strncmp(arg, "longitude", 8) == 0) {
-    Serial.println((int16_t) eeprom_read_word((uint16_t *) EEPROM_USER_LONGITUDE_DEG));    
+    Serial.println((int16_t) eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG));    
   }             
   else if(strncmp(arg, "settings", 8) == 0) {   
     // print all the settings to the screen in an orderly fashion
@@ -4517,7 +4518,16 @@ void displayRSSI(void){
   Serial.println(F("Info: Beginning Network Scan..."));                
   SUCCESS_MESSAGE_DELAY();
 
-  boolean foundSSID = esp.scanForAccessPoint(ssid, &res, &num_results_found);
+  boolean foundSSID = false; 
+  uint8_t num_scan_attempts = 0;
+  do{
+    foundSSID = esp.scanForAccessPoint(ssid, &res, &num_results_found);
+    num_scan_attempts++;
+    if(!foundSSID){
+      delay(100);
+    }
+  } while(!foundSSID && num_scan_attempts <= 5);
+  
   Serial.print(F("Info: Network Scan found "));
   Serial.print(num_results_found);
   Serial.println(F(" networks"));
@@ -5849,43 +5859,9 @@ void printCsvDataLine(){
   Serial.print(co_moving_average, 6);
   appendToString(co_moving_average, 6, dataString, &dataStringRemaining);
   
-  Serial.print(F(","));
-  appendToString("," , dataString, &dataStringRemaining);
-
-  if(gps_latitude != TinyGPS::GPS_INVALID_F_ANGLE){
-    Serial.print(gps_latitude, 6);
-    appendToString(gps_latitude, 6, dataString, &dataStringRemaining);
-  }
-  else{
-    Serial.print(F("---"));
-    appendToString("---", dataString, &dataStringRemaining);
-  }
+  Serial.print(gps_csv_string);
+  appendToString(gps_csv_string, dataString, &dataStringRemaining);
   
-  Serial.print(F(","));
-  appendToString("," , dataString, &dataStringRemaining);
-
-  if(gps_longitude != TinyGPS::GPS_INVALID_F_ANGLE){
-    Serial.print(gps_longitude, 6);
-    appendToString(gps_longitude, 6, dataString, &dataStringRemaining);
-  }
-  else{
-    Serial.print(F("---"));
-    appendToString("---", dataString, &dataStringRemaining);
-  }  
-
-  Serial.print(F(","));
-  appendToString("," , dataString, &dataStringRemaining);
-
-  if(gps_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE){
-    Serial.print(gps_altitude, 6);
-    appendToString(gps_altitude, 2, dataString, &dataStringRemaining);
-  }
-  else{
-    Serial.print(F("---"));
-    appendToString("---", dataString, &dataStringRemaining);
-  }
-
-
   Serial.println();
   appendToString("\n", dataString, &dataStringRemaining);   
   
@@ -6545,40 +6521,46 @@ void rtcClearOscillatorStopFlag(void){
 
 /****** GPS SUPPORT FUNCTIONS ******/
 void updateGpsStrings(void){
-  const char * gps_lat_lng_field_mqtt_template = ",\"latitude\":%10.6f,\"longitude\":%11.6f";
-  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%10.6f,\"longitude\":%11.6f,\"altitude\":%8.2f"; 
-  const char * gps_lat_lng_field_csv_template = ",%10.6f,%11.6f,---";
-  const char * gps_lat_lng_alt_field_csv_template  = ",%10.6f,%11.6f,%8.2f";   
+  const char * gps_lat_lng_field_mqtt_template = ",\"latitude\":%.6f,\"longitude\":%.6f";
+  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%.6f,\"longitude\":%.6f,\"altitude\":%.2f"; 
+  const char * gps_lat_lng_field_csv_template = ",%.6f,%.6f,---";
+  const char * gps_lat_lng_alt_field_csv_template  = ",%.6f,%.6f,%.2f";   
 
   static boolean first = true;
   if(first){
     first = false;
     float tmp = eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG);
+    // Serial.println(tmp,6);    
     if(!isnan(tmp) && (tmp >= -180.0f) && (tmp <= 180.0f)){
       user_latitude = tmp;
     }
     
     tmp = eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG);
+    // Serial.println(tmp,6);
     if(!isnan(tmp) && (tmp >= -90.0f) && (tmp <= 90.0f)){
       user_longitude = tmp;
     }
 
-    tmp = eeprom_read_float((float *) EEPROM_ALTITUDE_METERS);
-    if(!isnan(tmp) && (tmp != -1.0f)){
-      user_altitude = tmp;
+    int16_t l_tmp = (int16_t) eeprom_read_word((uint16_t *) EEPROM_ALTITUDE_METERS);
+    // Serial.println(l_tmp);
+    if(tmp != -1){
+      user_altitude = 1.0f * l_tmp;
     }
+
+    // Serial.println(user_latitude, 6);
+    // Serial.println(user_longitude, 6);
+    // Serial.println(user_altitude, 2);
   }
   
   memset(gps_mqtt_string, 0, GPS_MQTT_STRING_LENGTH);
-  memset(gps_csv_string, 0, GPS_CSV_STRING_LENGTH);
-  strcpy_P(gps_csv_string, PSTR(",---,---,---"));
-
-  if(user_location_override && (user_latitude != TinyGPS::GPS_INVALID_F_ANGLE) && (user_longitude != TinyGPS::GPS_INVALID_F_ANGLE)){
-    if(user_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE){
+  memset(gps_csv_string, 0, GPS_CSV_STRING_LENGTH);  
+  
+  if(user_location_override && (user_latitude != TinyGPS::GPS_INVALID_F_ANGLE) && (user_longitude != TinyGPS::GPS_INVALID_F_ANGLE)){    
+    if(user_altitude != -1.0f){
       snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_alt_field_mqtt_template, user_latitude, user_longitude, user_altitude);
       snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_alt_field_csv_template, user_latitude, user_longitude, user_altitude);
     }
-    else{
+    else{      
       snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_field_mqtt_template, user_latitude, user_longitude);
       snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_field_csv_template, user_latitude, user_longitude);
     }       
@@ -6592,6 +6574,9 @@ void updateGpsStrings(void){
       snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_field_mqtt_template, gps_latitude, gps_longitude);
       snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_field_csv_template, gps_latitude, gps_longitude);
     }    
+  }
+  else{    
+    strcpy_P(gps_csv_string, PSTR(",---,---,---"));
   }
 }
 
