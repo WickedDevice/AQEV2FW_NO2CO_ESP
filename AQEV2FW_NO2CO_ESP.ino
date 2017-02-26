@@ -569,14 +569,14 @@ void setup() {
     Serial.println(F(" secs of no input."));
     setLCD_P(PSTR("CONNECT TERMINAL"
                   "FOR CONFIG MODE "));
-
-    g_backlight_turned_on = false; // clear the global flag
+    
     boolean soft_ap_config_activated = false;
+    boolean touch_detected = false;
     current_millis = millis();     
     while (current_millis < start + startup_time_period) { // can get away with this sort of thing at start up
       current_millis = millis();
 
-      if(g_backlight_turned_on){
+      if(touch_detected){
         soft_ap_config_activated = true;
         Serial.println();
         Serial.println(F("Info: Entering SoftAP Mode for Configuration"));
@@ -587,7 +587,7 @@ void setup() {
         static uint8_t num_touch_intervals = 0;
         previous_touch_sampling_millis = current_millis;    
         collectTouch();    
-        processTouchQuietly();
+        touch_detected = processTouchQuietly();
         
         num_touch_intervals++;
         if(num_touch_intervals == 5){
@@ -631,6 +631,7 @@ void setup() {
       configInject("aqe\r");
       doSoftApModeConfigBehavior();
       configInject("exit\r");
+      initEsp8266();
     }
     else{
       integrity_check_passed = checkConfigIntegrity();
@@ -972,6 +973,24 @@ void init_firmware_version(void){
     AQEV2FW_PATCH_VERSION);
 }
 
+void initEsp8266(void){
+  uint8_t connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
+  Serial.print(F("Info: ESP8266 Initialization..."));  
+  SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
+    
+  esp.setTcpKeepAliveInterval(10); // 10 seconds
+  esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up   
+  if (esp.reset()) {
+    esp.setNetworkMode(1);
+    Serial.println(F("OK."));
+    init_esp8266_ok = true;
+  }
+  else {
+    Serial.println(F("Failed."));
+    init_esp8266_ok = false;
+  }  
+}
+
 void initializeHardware(void) {
   Serial.begin(115200);
   Serial1.begin(115200);
@@ -1182,22 +1201,8 @@ void initializeHardware(void) {
 
   selectNoSlot();
 
-  uint8_t connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
-  Serial.print(F("Info: ESP8266 Initialization..."));  
-  SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
   petWatchdog();
-
-  esp.setTcpKeepAliveInterval(10); // 10 seconds
-  esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up   
-  if (esp.reset()) {
-    esp.setNetworkMode(1);
-    Serial.println(F("OK."));
-    init_esp8266_ok = true;
-  }
-  else {
-    Serial.println(F("Failed."));
-    init_esp8266_ok = false;
-  }
+  initEsp8266();
   
   updateLCD("NO2 / CO", 0);
   updateLCD("MODEL", 1);
@@ -4070,10 +4075,10 @@ void safe_dtostrf(float value, signed char width, unsigned char precision, char 
 
 }
 
-void backlightOn(void) {
-  g_backlight_turned_on = true; // set a global flag
+void backlightOn(void) {  
   uint8_t backlight_behavior = eeprom_read_byte((uint8_t *) EEPROM_BACKLIGHT_STARTUP);
   if(backlight_behavior != BACKLIGHT_ALWAYS_OFF){
+    g_backlight_turned_on = true; // set global flag
     digitalWrite(A6, HIGH);
   }
 }
@@ -4081,6 +4086,7 @@ void backlightOn(void) {
 void backlightOff(void) {
   uint8_t backlight_behavior = eeprom_read_byte((uint8_t *) EEPROM_BACKLIGHT_STARTUP);
   if(backlight_behavior != BACKLIGHT_ALWAYS_ON){
+    g_backlight_turned_on = false; // clear global flag
     digitalWrite(A6, LOW);
   }
 }
@@ -5144,12 +5150,13 @@ void collectTouch(void){
   }
 }
 
-void processTouchVerbose(boolean verbose_output){
+boolean processTouchVerbose(boolean verbose_output){
   const uint32_t touch_event_threshold = 50UL;  
   static boolean first_time = true;
   static unsigned long touch_start_millis = 0UL;
   long backlight_interval = 60000L; 
   static boolean backlight_is_on = false;
+  boolean ret = false;
  
   if(first_time){
     first_time = false;
@@ -5169,6 +5176,7 @@ void processTouchVerbose(boolean verbose_output){
       Serial.println(F("Info: Turning backlight on."));
     }
     touch_start_millis = current_millis;
+    ret = true;
   } 
   
   if((current_millis - touch_start_millis) >= backlight_interval) {        
@@ -5179,15 +5187,17 @@ void processTouchVerbose(boolean verbose_output){
       backlightOff();      
       backlight_is_on = false;      
     }
-  }  
+  }
+
+  return ret;
 }
 
-void processTouch(void){
-  processTouchVerbose(true);
+boolean processTouch(void){
+  return processTouchVerbose(true);
 }
 
-void processTouchQuietly(void){
-  processTouchVerbose(false);
+boolean processTouchQuietly(void){
+  return processTouchVerbose(false);
 }
 
 void advanceSampleBufferIndex(void){
@@ -6767,7 +6777,8 @@ void doSoftApModeConfigBehavior(void){
             previousMillis = currentMillis;
             if(seconds_remaining_in_softap_mode != 0){
               seconds_remaining_in_softap_mode--;
-              Serial.print(".");                           
+              Serial.print(".");       
+              updateCornerDot();                    
               if((seconds_remaining_in_softap_mode % 60) == 0){
                 Serial.println();
               }
@@ -6899,12 +6910,18 @@ void doSoftApModeConfigBehavior(void){
             seconds_remaining_in_softap_mode = default_seconds_remaining_in_softap_mode;
             
             // and wait 100ms to make sure it gets back to the caller
-            delay(100); 
+            delay(500); 
             
             clearTempBuffers();                 
             // if the parse failed we're back to waiting for a message body
             got_closing_brace = false;
-            got_opening_brace = false;            
+            got_opening_brace = false;       
+            
+//            clearLCD();
+//            updateLCD(egg_ssid, 0);   
+//            updateLCD(&random_password[fixed_password_length], 1);  
+//
+//            clearTempBuffers();                               
           }          
         }
 
