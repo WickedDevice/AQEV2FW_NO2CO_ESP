@@ -94,6 +94,10 @@ float gps_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float gps_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
 unsigned long gps_age = TinyGPS::GPS_INVALID_AGE;
 
+float user_latitude = TinyGPS::GPS_INVALID_F_ANGLE;
+float user_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
+float user_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
+
 #define MAX_SAMPLE_BUFFER_DEPTH (180) // 15 minutes @ 5 second resolution
 #define NO2_SAMPLE_BUFFER         (0)
 #define CO_SAMPLE_BUFFER          (1)
@@ -899,6 +903,10 @@ void loop() {
         break;
       }
     }
+  }
+  else if(user_location_override){
+    // hardware doesn't matter in this case
+    updateGpsStrings();
   }
   
   
@@ -6541,12 +6549,41 @@ void updateGpsStrings(void){
   const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%10.6f,\"longitude\":%11.6f,\"altitude\":%8.2f"; 
   const char * gps_lat_lng_field_csv_template = ",%10.6f,%11.6f,---";
   const char * gps_lat_lng_alt_field_csv_template  = ",%10.6f,%11.6f,%8.2f";   
+
+  static boolean first = true;
+  if(first){
+    first = false;
+    float tmp = eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG);
+    if(!isnan(tmp) && (tmp >= -180.0f) && (tmp <= 180.0f)){
+      user_latitude = tmp;
+    }
+    
+    tmp = eeprom_read_float((float *) EEPROM_USER_LONGITUDE_DEG);
+    if(!isnan(tmp) && (tmp >= -90.0f) && (tmp <= 90.0f)){
+      user_longitude = tmp;
+    }
+
+    tmp = eeprom_read_float((float *) EEPROM_ALTITUDE_METERS);
+    if(!isnan(tmp) && (tmp != -1.0f)){
+      user_altitude = tmp;
+    }
+  }
   
   memset(gps_mqtt_string, 0, GPS_MQTT_STRING_LENGTH);
   memset(gps_csv_string, 0, GPS_CSV_STRING_LENGTH);
   strcpy_P(gps_csv_string, PSTR(",---,---,---"));
-  
-  if((gps_latitude != TinyGPS::GPS_INVALID_F_ANGLE) && (gps_longitude != TinyGPS::GPS_INVALID_F_ANGLE)){
+
+  if(user_location_override && (user_latitude != TinyGPS::GPS_INVALID_F_ANGLE) && (user_longitude != TinyGPS::GPS_INVALID_F_ANGLE)){
+    if(user_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE){
+      snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_alt_field_mqtt_template, user_latitude, user_longitude, user_altitude);
+      snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_alt_field_csv_template, user_latitude, user_longitude, user_altitude);
+    }
+    else{
+      snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_field_mqtt_template, user_latitude, user_longitude);
+      snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_field_csv_template, user_latitude, user_longitude);
+    }       
+  }  
+  else if((gps_latitude != TinyGPS::GPS_INVALID_F_ANGLE) && (gps_longitude != TinyGPS::GPS_INVALID_F_ANGLE)){
     if(gps_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE){
       snprintf(gps_mqtt_string, GPS_MQTT_STRING_LENGTH-1, gps_lat_lng_alt_field_mqtt_template, gps_latitude, gps_longitude, gps_altitude);
       snprintf(gps_csv_string, GPS_CSV_STRING_LENGTH-1, gps_lat_lng_alt_field_csv_template, gps_latitude, gps_longitude, gps_altitude);
@@ -6883,10 +6920,8 @@ void doSoftApModeConfigBehavior(void){
         if(explicit_exit_softap){
           if(!mirrored_config_matches_eeprom_config()){
             Serial.println(F("Info: Detected configuration changes"));
-            if(checkConfigIntegrity()){
-              Serial.print(F("Info: Committing configuration changes..."));
+            if(checkConfigIntegrity()){              
               commitConfigToMirroredConfig();
-              Serial.println(F("OK"));
             }
             else {
               Serial.print(F("Error: Integrity check failed, discarding changes..."));
@@ -6983,6 +7018,7 @@ boolean parseConfigurationMessageBody(char * body){
      Serial.print(value);
      Serial.println();   
 
+    // handlers for valid JSON keys
     if(strcmp(key, "ssid") == 0){
       found_ssid = true;
       strcpy(ssid, value);
@@ -7001,6 +7037,21 @@ boolean parseConfigurationMessageBody(char * body){
       else if(strcmp(value, "false") == 0){
         set_user_location_enable("enable");
       }
+    }
+    else if(strcmp(key, "lat") == 0){
+      set_user_latitude(value);
+    }
+    else if(strcmp(key, "lng") == 0){
+      set_user_longitude(value);
+    }
+    else if(strcmp(key, "temp_unit") == 0){
+      set_temperature_units(value);
+    }
+    else{
+      Serial.print(F("Warn: posted key \""));
+      Serial.print(key);
+      Serial.print(F("\" is unrecognized and will be ignored."));
+      Serial.println();
     }
 
     if(!handled_ssid_pwd && found_ssid && found_pwd){
@@ -7022,7 +7073,7 @@ boolean parseConfigurationMessageBody(char * body){
         wifi_can_connect = false;
       }
       handled_ssid_pwd = true;
-    }  
+    }
   }
 
   return found_exit;
