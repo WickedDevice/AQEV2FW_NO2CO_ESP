@@ -703,7 +703,6 @@ void setup() {
       const uint32_t idle_timeout_period_ms = 1000UL * 60UL * 5UL; // 5 minutes
       uint32_t idle_time_ms = 0;
       Serial.println(F("-~=* In CONFIG Mode *=~-"));
-      
       if(integrity_check_passed && valid_ssid_passed){
         setLCD_P(PSTR("  CONFIG MODE"));
       }          
@@ -712,7 +711,6 @@ void setup() {
       Serial.print((idle_timeout_period_ms / 1000UL) / 60UL);
       Serial.println(F(" mins without input."));
       Serial.println(F("Enter 'help' for a list of available commands, "));
-            
   
       configInject("get settings\r");
       Serial.println();
@@ -2048,6 +2046,7 @@ void print_eeprom_value(char * arg) {
     Serial.println(F(" +-------------------------------------------------------------+"));
     Serial.println(F(" | Location Settings:                                          |"));
     Serial.println(F(" +-------------------------------------------------------------+"));
+
     Serial.print(F("    User Location: "));
     if(eeprom_read_byte((uint8_t *) EEPROM_USER_LOCATION_EN) == 1){
       Serial.println(F("Enabled"));
@@ -2055,6 +2054,15 @@ void print_eeprom_value(char * arg) {
     else{
       Serial.println(F("Disabled"));
     }  
+
+    Serial.print(F("    GPS: "));
+    if(gps_installed){
+      Serial.println(F("Installed"));
+    }
+    else{
+      Serial.println(F("Not installed"));
+    } 
+ 
     Serial.print(F("    User Latitude: "));
     print_latitude_settings();
     Serial.print(F("    User Longitude: "));
@@ -2767,7 +2775,7 @@ void set_network_password(char * arg) {
   // we've reserved 32-bytes of EEPROM for a network password
   // so the argument's length must be <= 31
   char password[32] = {0};
-  uint16_t len = arg ? strlen(arg) : 0;
+  uint16_t len = (arg != NULL) ? strlen(arg) : 0;
   if (len < 32) {
     if(arg){
       strncpy(password, arg, len);
