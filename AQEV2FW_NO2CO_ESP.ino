@@ -2786,15 +2786,13 @@ void set_network_password(char * arg) {
   if(!configMemoryUnlocked(__LINE__)){
     return;
   }
-  
+
   // we've reserved 32-bytes of EEPROM for a network password
   // so the argument's length must be <= 31
   char password[32] = {0};
-  uint16_t len = (arg != NULL) ? strlen(arg) : 0;
-  if (len < 32) {
-    if(arg != NULL){
-      strncpy(password, arg, len);
-    }
+  uint16_t len = strlen(arg);
+  if (len < 32) {   
+    strncpy(password, arg, len);
     eeprom_write_block(password, (void *) EEPROM_NETWORK_PWD, 32);
     recomputeAndStoreConfigChecksum();
   }
@@ -2810,8 +2808,7 @@ void set_network_security_mode(char * arg) {
   
   boolean valid = true;
   if (strncmp("open", arg, 4) == 0) {
-    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 0);
-    set_network_password(NULL);
+    eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 0);    
   }
   else if (strncmp("wep", arg, 3) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 1);
@@ -4570,7 +4567,7 @@ void displayRSSI(void){
     if(!foundSSID){
       delay(100);
     }
-  } while(!foundSSID && num_scan_attempts <= 5);
+  } while(!foundSSID && (num_scan_attempts <= 3));
   
   Serial.print(F("Info: Network Scan found "));
   Serial.print(num_results_found);
@@ -6995,9 +6992,7 @@ void doSoftApModeConfigBehavior(void){
       else{
         Serial.print(F("Error: Failed to start TCP server on port "));
         Serial.println(softap_http_port);
-      }
-
-      esp.setNetworkMode(1);
+      }    
     }
     else{
       Serial.println(F("Error: Failed to configure Soft AP"));
