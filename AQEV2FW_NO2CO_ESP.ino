@@ -117,7 +117,7 @@ float touch_sample_buffer[TOUCH_SAMPLE_BUFFER_DEPTH] = {0};
 #define LCD_SUCCESS_MESSAGE_DELAY (2000)
 
 jsmn_parser parser;
-jsmntok_t json_tokens[16];
+jsmntok_t json_tokens[21];
 
 boolean no2_ready = false;
 boolean co_ready = false;
@@ -986,7 +986,6 @@ void init_firmware_version(void){
 void initEsp8266(void){
   uint8_t connect_method = eeprom_read_byte((const uint8_t *) EEPROM_CONNECT_METHOD);
   Serial.print(F("Info: ESP8266 Initialization..."));  
-  SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
     
   esp.setTcpKeepAliveInterval(10); // 10 seconds
   esp.setInputBuffer(esp8266_input_buffer, ESP8266_INPUT_BUFFER_SIZE); // connect the input buffer up   
@@ -1212,6 +1211,7 @@ void initializeHardware(void) {
   selectNoSlot();
 
   petWatchdog();
+  SUCCESS_MESSAGE_DELAY(); // don't race past the splash screen, and give watchdog some breathing room
   initEsp8266();
   
   updateLCD("NO2 / CO", 0);
@@ -2792,7 +2792,7 @@ void set_network_password(char * arg) {
   char password[32] = {0};
   uint16_t len = (arg != NULL) ? strlen(arg) : 0;
   if (len < 32) {
-    if(arg){
+    if(arg != NULL){
       strncpy(password, arg, len);
     }
     eeprom_write_block(password, (void *) EEPROM_NETWORK_PWD, 32);
@@ -5286,8 +5286,6 @@ float pressure_scale_factor(void){
   int16_t altitude_meters = user_altitude_meters;
   if(!user_location_override && (gps_altitude != TinyGPS::GPS_INVALID_F_ALTITUDE)){
     altitude_meters = (int16_t) gps_altitude;
-    // hang on to the last gps based altitude in this case
-    user_altitude_meters = altitude_meters;
   }
 
   if(altitude_meters != -1){
@@ -6577,8 +6575,6 @@ void rtcClearOscillatorStopFlag(void){
 
 /****** GPS SUPPORT FUNCTIONS ******/
 void updateGpsStrings(void){
-//  const char * gps_lat_lng_field_mqtt_template = ",\"latitude\":%.6f,\"longitude\":%.6f";
-//  const char * gps_lat_lng_alt_field_mqtt_template  = ",\"latitude\":%.6f,\"longitude\":%.6f,\"altitude\":%.2f"; 
   const char * gps_lat_lng_field_mqtt_template = ",\"__location\":{\"lat\":%.6f,\"lon\":%.6f}"; 
   const char * gps_lat_lng_alt_field_mqtt_template  = ",\"__location\":{\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.2f}"; 
   const char * gps_lat_lng_field_csv_template = ",%.6f,%.6f,---";
