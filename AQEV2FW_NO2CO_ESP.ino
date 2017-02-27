@@ -211,6 +211,7 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_USER_LATITUDE_DEG  (EEPROM_MQTT_TOPIC_SUFFIX_ENABLED - 4) // float value, 4-bytes, user specified latitude in degrees
 #define EEPROM_USER_LONGITUDE_DEG (EEPROM_USER_LATITUDE_DEG - 4)         // float value, 4-bytes, user specified longitude in degrees
 #define EEPROM_USER_LOCATION_EN   (EEPROM_USER_LONGITUDE_DEG - 1)        // 1 means user location supercedes GPS location, anything else means GPS or bust
+#define EEPROM_2_1_0_SAMPLING_UPD (EEPROM_USER_LOCATION_EN - 1)          // 1 means to sampling parameter default changes have been applied
 //  /\
 //   L Add values up here by subtracting offsets to previously added values
 //   * ... and make sure the addresses don't collide and start overlapping!
@@ -557,6 +558,9 @@ void setup() {
     allowed_to_write_config_eeprom = false;
   }
   else if(!mirrored_config_matches_eeprom_config()){
+    // probably the reason you got into this case is because you changed settings 
+    // in CLI mode but failed to connect to a network afterwards
+    // so this will revert the Egg to use its last settings that *did* connect to a network
     Serial.println(F("Info: Startup config integrity check passed, but mirrored config differs, attempting to restore from mirrored configuration."));
     allowed_to_write_config_eeprom = true;
     mirrored_config_restore_and_validate(); 
@@ -1312,6 +1316,17 @@ void initializeNewConfigSettings(void){
     memset(command_buf, 0, 128);
     strcat(command_buf, "mqttsuffix enable\r");        
     configInject(command_buf);    
+  }
+
+  val = eeprom_read_byte((const uint8_t *) EEPROM_2_1_0_SAMPLING_UPD);
+  if(val != 1){
+    if(!in_config_mode){
+      configInject("aqe\r");
+      in_config_mode = true;
+    }            
+    configInject("sampling 5, 900, 60\r");     
+    eeprom_write_byte((uint8_t *) EEPROM_2_1_0_SAMPLING_UPD, 1);
+    recomputeAndStoreConfigChecksum();
   }
   
   if(in_config_mode){
@@ -2224,7 +2239,7 @@ void restore(char * arg) {
     configInject("mqttuser wickeddevice\r");
     configInject("mqttprefix /orgs/wd/aqe/\r");
     configInject("mqttsuffix enable\r");
-    configInject("sampling 5, 160, 5\r");   
+    configInject("sampling 5, 900, 60\r"); // sample every 5 seconds, average over 15 minutes, report every minute
     configInject("ntpsrv disable\r");
     configInject("ntpsrv pool.ntp.org\r");
     configInject("restore tz_off\r");
