@@ -1681,10 +1681,10 @@ void print_eeprom_security_type(void) {
       Serial.println(F("WEP"));
       break;
     case 2:
-      Serial.println(F("WPA"));
+      Serial.println(F("WPA2"));
       break;
     case 3:
-      Serial.println(F("WPA2"));
+      Serial.println(F("WPA"));
       break;
     case WLAN_SEC_AUTO:
       Serial.println(F("Automatic - Not Yet Determined"));
@@ -2809,6 +2809,7 @@ void set_network_security_mode(char * arg) {
   boolean valid = true;
   if (strncmp("open", arg, 4) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 0);    
+    set_network_password("");
   }
   else if (strncmp("wep", arg, 3) == 0) {
     eeprom_write_byte((uint8_t *) EEPROM_SECURITY_MODE, 1);
@@ -4548,7 +4549,7 @@ void displayRSSI(void){
   static ap_scan_result_t res = {0};    
   int8_t max_rssi = -256;
   boolean found_ssid = false;
-  uint8_t target_network_secMode = 0;  
+  uint8_t target_network_secMode = WLAN_SEC_AUTO;  
   uint8_t network_security_mode = eeprom_read_byte((const uint8_t *) EEPROM_SECURITY_MODE);   
   uint8_t num_results_found = 0;  
   
@@ -4577,7 +4578,7 @@ void displayRSSI(void){
   Serial.print(ssid);
   Serial.print(F("\", ")); 
   if(foundSSID){
-    
+    target_network_secMode = res.security;    
     Serial.print(F("RSSI = "));
     Serial.println(res.rssi);    
     int8_t rssi_dbm = res.rssi;
