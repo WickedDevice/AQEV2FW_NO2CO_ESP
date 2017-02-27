@@ -579,7 +579,7 @@ void setup() {
   //            and the mirrored config is *different* from the eeprom config
   // !integrity_check_passed && !mirrored_config_mismatch
   //   means... all attempts to attain a valid configuration faile
-  //            and the mirrored config is *identical* from the eeprom config
+  //            and the mirrored config is *identical* to the eeprom config
   valid_ssid_passed = valid_ssid_config();  
   boolean ok_to_exit_config_mode = true;
 
@@ -602,7 +602,7 @@ void setup() {
     Serial.print(F("OPERATIONAL mode automatically begins after "));
     Serial.print(startup_time_period / 1000);
     Serial.println(F(" secs of no input."));
-    setLCD_P(PSTR("TO SETUP, TOUCH "
+    setLCD_P(PSTR(" TOUCH TO SETUP "
                   " OR CONNECT USB "));
     boolean soft_ap_config_activated = false;
     boolean touch_detected = false;
