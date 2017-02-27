@@ -567,9 +567,8 @@ void setup() {
     Serial.print(F("OPERATIONAL mode automatically begins after "));
     Serial.print(startup_time_period / 1000);
     Serial.println(F(" secs of no input."));
-    setLCD_P(PSTR("CONNECT TERMINAL"
-                  "FOR CONFIG MODE "));
-    
+    setLCD_P(PSTR("TO SETUP, TOUCH "
+                  " OR CONNECT USB "));
     boolean soft_ap_config_activated = false;
     boolean touch_detected = false;
     current_millis = millis();     
