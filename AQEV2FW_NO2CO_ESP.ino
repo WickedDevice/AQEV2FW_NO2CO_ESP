@@ -545,15 +545,46 @@ void setup() {
   //  get_mirrored_config(tmp);  
   //  dump_config(tmp);
   //  Serial.println();
-    
+
+  integrity_check_passed = checkConfigIntegrity();
+  // if the integrity check failed, try and undo the damage using the mirror config, if it's valid
+  if(!integrity_check_passed){
+    Serial.println(F("Info: Startup config integrity check failed, attempting to restore from mirrored configuration."));
+    allowed_to_write_config_eeprom = true;
+    mirrored_config_restore_and_validate(); 
+    integrity_check_passed = checkConfigIntegrity();
+    mirrored_config_mismatch = !mirrored_config_matches_eeprom_config();
+    allowed_to_write_config_eeprom = false;
+  }
+  else if(!mirrored_config_matches_eeprom_config()){
+    Serial.println(F("Info: Startup config integrity check passed, but mirrored config differs, attempting to restore from mirrored configuration."));
+    allowed_to_write_config_eeprom = true;
+    mirrored_config_restore_and_validate(); 
+    integrity_check_passed = checkConfigIntegrity();
+    mirrored_config_mismatch = !mirrored_config_matches_eeprom_config();
+    allowed_to_write_config_eeprom = false;
+  }
+
+  // possible outcomes of the above code
+  // integrity_check_passed && mirrored_config_mismatch
+  //   means... mirror configuration is not yet valid
+  // integrity_check_passed && !mirrored_config_mismatch
+  //   means... everything is great, normal behavior
+  // !integrity_check_passed && mirrored_config_mismatch
+  //   means... all attempts to attain a valid configuration faile
+  //            and the mirrored config is *different* from the eeprom config
+  // !integrity_check_passed && !mirrored_config_mismatch
+  //   means... all attempts to attain a valid configuration faile
+  //            and the mirrored config is *identical* from the eeprom config
+  valid_ssid_passed = valid_ssid_config();  
+  boolean ok_to_exit_config_mode = true;
+
   // if a software update introduced new settings
   // they should be populated with defaults as necessary
   initializeNewConfigSettings();
 
-
   user_location_override = (eeprom_read_byte((const uint8_t *) EEPROM_USER_LOCATION_EN) == 1) ? true : false;  
-  uint8_t target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);  
-  boolean ok_to_exit_config_mode = true;     
+  uint8_t target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);       
   
   // config mode processing loop
   do{
@@ -632,23 +663,7 @@ void setup() {
       configInject("exit\r");
       initEsp8266();
     }
-    else{
-      integrity_check_passed = checkConfigIntegrity();
-      // if the integrity check failed, try and undo the damage using the mirror config, if it's valid
-      if(!integrity_check_passed){
-        Serial.println(F("Info: Startup config integrity check failed, attempting to restore from mirrored configuration."));
-        allowed_to_write_config_eeprom = true;
-        integrity_check_passed = mirrored_config_restore_and_validate(); 
-        allowed_to_write_config_eeprom = false;
-      }
-      else if(!mirrored_config_matches_eeprom_config()){
-        mirrored_config_mismatch = true;
-        Serial.println(F("Info: Startup config integrity check passed, but mirrored config differs, attempting to restore from mirrored configuration."));
-        allowed_to_write_config_eeprom = true;
-        integrity_check_passed = mirrored_config_restore_and_validate();
-        allowed_to_write_config_eeprom = false;
-      }     
-      
+    else{   
       valid_ssid_passed = valid_ssid_config();  
     
       // check for initial integrity of configuration in eeprom
@@ -658,9 +673,9 @@ void setup() {
         Serial.println();
         
         do{
-          setLCD_P(PSTR("PLEASE CONFIGURE"
-                        "NETWORK SETTINGS"));
-          delay(LCD_ERROR_MESSAGE_DELAY);
+          //setLCD_P(PSTR("PLEASE CONFIGURE"
+          //              "NETWORK SETTINGS"));
+          //delay(LCD_ERROR_MESSAGE_DELAY);
           
           allowed_to_write_config_eeprom = true;
           doSoftApModeConfigBehavior();
@@ -668,14 +683,8 @@ void setup() {
                                
         } while(!valid_ssid_passed);
       }
-      else if(!integrity_check_passed && !mirrored_config_mismatch) { 
-        // if there was not a mirrored config mismatch and integrity check did not pass
-        // that means startup config integrity check failed, and restoring from mirror configuration failed
-        // to result in a valid configuration as well
-        //
-        // if, on the other hand, there was a mirrored config mismatch, the logic above *implies* that the eeprom config 
-        // is valid and that the mirrored config is not (yet) valid, so we shouldn't go into this case, and instead 
-        // we should drop into the else case (i.e. what normally happens on a startup with a valid configuration)
+      else if(!integrity_check_passed) { 
+        // we have no choice but to offer config mode to the user
         Serial.println(F("Info: Config memory integrity check failed, automatically falling back to CONFIG mode."));
         configInject("aqe\r");
         Serial.println();
@@ -6444,7 +6453,7 @@ boolean mirrored_config_restore_and_validate(void){
       Serial.println(F("Info: Successfully restored to last valid configuration.")); 
     }
     else{
-      Serial.println(F("Info: Restored last valid configuration, but it's still not valid."));
+      Serial.println(F("Info: Restored last valid configuration, but it's still not valid. Possibly catastrophic."));
     }  
   }
   else{
