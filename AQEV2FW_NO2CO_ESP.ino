@@ -1324,7 +1324,7 @@ void initializeNewConfigSettings(void){
       configInject("aqe\r");
       in_config_mode = true;
     }            
-    configInject("sampling 5, 900, 60\r");     
+    configInject("sampling 5, 600, 60\r");
     eeprom_write_byte((uint8_t *) EEPROM_2_1_0_SAMPLING_UPD, 1);
     recomputeAndStoreConfigChecksum();
   }
@@ -2239,7 +2239,7 @@ void restore(char * arg) {
     configInject("mqttuser wickeddevice\r");
     configInject("mqttprefix /orgs/wd/aqe/\r");
     configInject("mqttsuffix enable\r");
-    configInject("sampling 5, 900, 60\r"); // sample every 5 seconds, average over 15 minutes, report every minute
+    configInject("sampling 5, 600, 60\r"); // sample every 5 seconds, average over 10 minutes, report every minute
     configInject("ntpsrv disable\r");
     configInject("ntpsrv pool.ntp.org\r");
     configInject("restore tz_off\r");
