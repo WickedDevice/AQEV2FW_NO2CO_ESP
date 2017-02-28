@@ -5646,9 +5646,12 @@ void watchdogInitialize(void){
 void loop_wifi_mqtt_mode(void){
   static uint8_t num_mqtt_connect_retries = 0;
   static uint8_t num_mqtt_intervals_without_wifi = 0; 
+  static uint8_t publish_counter = 0;
   
   // mqtt publish timer intervals
   static unsigned long previous_mqtt_publish_millis = 0;
+  
+  mqttReconnect(); // mqtt_client.loop gets called in here
   
   if(current_millis - previous_mqtt_publish_millis >= reporting_interval){   
     suspendGpsProcessing();    
@@ -5667,8 +5670,10 @@ void loop_wifi_mqtt_mode(void){
                       
         //connected to MQTT server and connected to Wi-Fi network        
         num_mqtt_connect_retries = 0;   
-        if(!publishHeartbeat()){
-          Serial.println(F("Error: Failed to publish Heartbeat."));  
+        if((publish_counter % 10) == 0){ // only publish heartbeats every 10 reporting intervals          
+          if(!publishHeartbeat()){
+            Serial.println(F("Error: Failed to publish Heartbeat."));  
+          }
         }
         
         if(init_sht25_ok){
@@ -5790,6 +5795,8 @@ void loop_wifi_mqtt_mode(void){
       
       restartWifi();
     }
+
+    publish_counter++;
   }    
 }
 
