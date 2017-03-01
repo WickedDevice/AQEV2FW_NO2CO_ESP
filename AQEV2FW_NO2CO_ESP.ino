@@ -6749,7 +6749,7 @@ void doSoftApModeConfigBehavior(void){
   
   randomSeed(micros());
   char random_password[16] = {0}; 
-  strcpy(random_password, "AQ"); // start with AQ, and subsequent characters randomly chosen
+  strcpy(random_password, ""); // could use a fixed prefix by initializing it here
   uint8_t fixed_password_length = strlen(random_password);
   const uint8_t random_password_length = 8;
     
