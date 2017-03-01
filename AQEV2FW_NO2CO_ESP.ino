@@ -1326,6 +1326,14 @@ void initializeNewConfigSettings(void){
     }            
     configInject("sampling 5, 600, 60\r");
     eeprom_write_byte((uint8_t *) EEPROM_2_1_0_SAMPLING_UPD, 1);
+
+    // check if ntpsrv is pool.ntp.org, and if so, switch it to 0.airqualityegg.pool.ntp.org
+    memset(command_buf, 0, 128);  
+    eeprom_write_block(command_buf, (void *) EEPROM_NTP_SERVER_NAME, 32);
+    if(strcmp(command_buf, "pool.ntp.org") == 0){      
+      configInject("ntpsrv 0.airqualityegg.pool.ntp.org\r");
+    }
+    
     recomputeAndStoreConfigChecksum();
   }
   
@@ -2241,7 +2249,7 @@ void restore(char * arg) {
     configInject("mqttsuffix enable\r");
     configInject("sampling 5, 600, 60\r"); // sample every 5 seconds, average over 10 minutes, report every minute
     configInject("ntpsrv disable\r");
-    configInject("ntpsrv pool.ntp.org\r");
+    configInject("ntpsrv 0.airqualityegg.pool.ntp.org\r");
     configInject("restore tz_off\r");
     configInject("restore temp_off\r");
     configInject("restore hum_off\r");       
