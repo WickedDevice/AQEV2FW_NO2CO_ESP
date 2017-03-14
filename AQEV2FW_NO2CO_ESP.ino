@@ -666,9 +666,12 @@ void setup() {
     Serial.println();
 
     if(soft_ap_config_activated){
-      allowed_to_write_config_eeprom = true;
       configInject("aqe\r");
-      doSoftApModeConfigBehavior();
+      do{            
+        allowed_to_write_config_eeprom = true;        
+        doSoftApModeConfigBehavior();
+        valid_ssid_passed = valid_ssid_config();                                       
+      } while(!valid_ssid_passed && mode_requires_wifi(target_mode)); 
       configInject("exit\r");
       initEsp8266();
     }
