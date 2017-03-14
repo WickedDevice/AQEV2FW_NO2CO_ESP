@@ -615,7 +615,7 @@ void setup() {
     while (current_millis < start + startup_time_period) { // can get away with this sort of thing at start up
       current_millis = millis();
 
-      if(touch_detected){
+      if(touch_detected && (eeprom_read_byte((uint8_t *) EEPROM_DISABLE_SOFTAP) != 1)){     
         soft_ap_config_activated = true;
         Serial.println();
         Serial.println(F("Info: Entering SoftAP Mode for Configuration"));
@@ -677,6 +677,7 @@ void setup() {
     
       // check for initial integrity of configuration in eeprom      
       if((mode != MODE_CONFIG) && mode_requires_wifi(target_mode) && !valid_ssid_passed){
+
         Serial.println(F("Info: No valid SSID configured, automatically falling back to CONFIG mode."));
         configInject("aqe\r");
         Serial.println();
