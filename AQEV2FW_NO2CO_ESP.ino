@@ -675,22 +675,36 @@ void setup() {
     else{   
       valid_ssid_passed = valid_ssid_config();  
     
-      // check for initial integrity of configuration in eeprom
+      // check for initial integrity of configuration in eeprom      
       if((mode != MODE_CONFIG) && mode_requires_wifi(target_mode) && !valid_ssid_passed){
         Serial.println(F("Info: No valid SSID configured, automatically falling back to CONFIG mode."));
         configInject("aqe\r");
         Serial.println();
-        
-        do{
-          //setLCD_P(PSTR("PLEASE CONFIGURE"
-          //              "NETWORK SETTINGS"));
-          //delay(LCD_ERROR_MESSAGE_DELAY);
-          
-          allowed_to_write_config_eeprom = true;
-          doSoftApModeConfigBehavior();
-          valid_ssid_passed = valid_ssid_config();       
-                               
-        } while(!valid_ssid_passed);
+
+        if(eeprom_read_byte((uint8_t *) EEPROM_DISABLE_SOFTAP) != 1){
+          // if you're not already in config mode, and if softap is allowed, 
+          // and if your operational mode requires wifi
+          // and if you don't have a viable ssid configured
+          // then offer the soft ap mode until you are you have a valid SSID          
+          do{            
+            allowed_to_write_config_eeprom = true;
+            doSoftApModeConfigBehavior();
+            valid_ssid_passed = valid_ssid_config();                                       
+          } while(!valid_ssid_passed);          
+        }
+        else{
+          // if you're not already in config mode, and if softap is NOT allowed, 
+          // and if your operational mode requires wifi
+          // and if you don't have a viable ssid configured
+          // then coerce terminal-based config mode
+          setLCD_P(PSTR("PLEASE CONFIGURE"
+                        "NETWORK SETTINGS"));
+          delay(LCD_ERROR_MESSAGE_DELAY);
+                    
+          configInject("aqe\r");
+          Serial.println();           
+          mode = MODE_CONFIG;                      
+        }
       }
       else if(!integrity_check_passed) { 
         // we have no choice but to offer config mode to the user
@@ -707,7 +721,7 @@ void setup() {
     Serial.println();
     delayForWatchdog();
     
-    if (mode == MODE_CONFIG) {      
+    while((mode == MODE_CONFIG) || (mode_requires_wifi(target_mode) && !valid_ssid_passed) ) {      
       allowed_to_write_config_eeprom = true;   
       const uint32_t idle_timeout_period_ms = 1000UL * 60UL * 5UL; // 5 minutes
       uint32_t idle_time_ms = 0;
@@ -774,6 +788,11 @@ void setup() {
           Serial.println(F("Info: Idle time expired, exiting CONFIG mode."));
           break;
         }
+      }
+
+      valid_ssid_passed = valid_ssid_config(); 
+      if(valid_ssid_passed){
+        break;
       }
     }
     
