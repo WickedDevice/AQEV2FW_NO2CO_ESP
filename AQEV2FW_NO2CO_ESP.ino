@@ -212,6 +212,7 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_USER_LONGITUDE_DEG (EEPROM_USER_LATITUDE_DEG - 4)         // float value, 4-bytes, user specified longitude in degrees
 #define EEPROM_USER_LOCATION_EN   (EEPROM_USER_LONGITUDE_DEG - 1)        // 1 means user location supercedes GPS location, anything else means GPS or bust
 #define EEPROM_2_1_0_SAMPLING_UPD (EEPROM_USER_LOCATION_EN - 1)          // 1 means to sampling parameter default changes have been applied
+#define EEPROM_DISABLE_SOFTAP     (EEPROM_2_1_0_SAMPLING_UPD - 1)        // 1 means to disable softap behavior
 //  /\
 //   L Add values up here by subtracting offsets to previously added values
 //   * ... and make sure the addresses don't collide and start overlapping!
@@ -302,6 +303,7 @@ void topic_suffix_config(char * arg);
 void set_user_latitude(char * arg);
 void set_user_longitude(char * arg);
 void set_user_location_enable(char * arg);
+void set_softap_enable(char * arg);
 
 // Note to self:
 //   When implementing a new parameter, ask yourself:
@@ -367,6 +369,7 @@ const char cmd_string_co_blv[] PROGMEM      = "co_blv     ";
 const char cmd_string_usr_lat[] PROGMEM     = "latitude   ";
 const char cmd_string_usr_lng[] PROGMEM     = "longitude  ";
 const char cmd_string_usr_loc_en[] PROGMEM  = "location   ";
+const char cmd_string_softap_en[] PROGMEM   = "softap     ";
 const char cmd_string_null[] PROGMEM        = "";
 
 PGM_P const commands[] PROGMEM = {
@@ -417,6 +420,7 @@ PGM_P const commands[] PROGMEM = {
   cmd_string_usr_lat,
   cmd_string_usr_lng,
   cmd_string_usr_loc_en,
+  cmd_string_softap_en,
   cmd_string_null
 };
 
@@ -468,6 +472,7 @@ void (*command_functions[])(char * arg) = {
   set_user_latitude,
   set_user_longitude,
   set_user_location_enable,
+  set_softap_enable,
   0
 };
 
@@ -1323,7 +1328,9 @@ void initializeNewConfigSettings(void){
     if(!in_config_mode){
       configInject("aqe\r");
       in_config_mode = true;
-    }            
+    }
+
+    configInject("softap enable\r");                
     configInject("sampling 5, 600, 60\r");
     eeprom_write_byte((uint8_t *) EEPROM_2_1_0_SAMPLING_UPD, 1);
 
@@ -1332,7 +1339,7 @@ void initializeNewConfigSettings(void){
     eeprom_write_block(command_buf, (void *) EEPROM_NTP_SERVER_NAME, 32);
     if(strcmp(command_buf, "pool.ntp.org") == 0){      
       configInject("ntpsrv 0.airqualityegg.pool.ntp.org\r");
-    }
+    }    
     
     recomputeAndStoreConfigChecksum();
   }
@@ -2065,6 +2072,13 @@ void print_eeprom_value(char * arg) {
     Serial.print(F("    Sensor Reporting Interval: "));
     Serial.print(eeprom_read_word((uint16_t *) EEPROM_REPORTING_INTERVAL));  
     Serial.println(F(" seconds"));
+    Serial.print(F("    SoftAP Config: "));
+    if(eeprom_read_byte((const uint8_t *) EEPROM_DISABLE_SOFTAP) == 1){
+      Serial.println(F("Disabled"));
+    }
+    else{
+      Serial.println(F("Enabled"));
+    }
 
     Serial.println(F(" +-------------------------------------------------------------+"));
     Serial.println(F(" | Location Settings:                                          |"));
@@ -2233,6 +2247,7 @@ void restore(char * arg) {
 
   if (strncmp(arg, "defaults", 8) == 0) {
     prompt();
+    configInject("softap enable\r");
     configInject("method direct\r");
     configInject("security auto\r");
     configInject("use dhcp\r");
@@ -3288,6 +3303,29 @@ void set_user_location_enable(char * arg){
 
   user_location_override = eeprom_read_byte((uint8_t *) EEPROM_USER_LOCATION_EN) == 1 ? true : false;
 }
+
+void set_softap_enable(char * arg){
+  if(!configMemoryUnlocked(__LINE__)){
+    return;
+  }
+
+  lowercase(arg);
+  
+  if (strcmp(arg, "enable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_DISABLE_SOFTAP, 0);    
+    recomputeAndStoreConfigChecksum();
+  }
+  else if (strcmp(arg, "disable") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_DISABLE_SOFTAP, 1);
+    recomputeAndStoreConfigChecksum();
+  }
+  else {
+    Serial.print(F("Error: expected 'enable' or 'disable' but got '"));
+    Serial.print(arg);
+    Serial.println("'");
+  }  
+}
+
 
 void topic_suffix_config(char * arg) {
   if(!configMemoryUnlocked(__LINE__)){
@@ -6744,6 +6782,10 @@ void getNetworkTime(void){
 }
 
 void doSoftApModeConfigBehavior(void){  
+  // if the user has opted out of soft ap mode, then don't do anything, just return
+  if(eeprom_read_byte((const uint8_t *) EEPROM_DISABLE_SOFTAP) == 1){
+    return;
+  }
   
   clearTempBuffers();
   
