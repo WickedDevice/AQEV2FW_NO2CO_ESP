@@ -7213,14 +7213,16 @@ boolean parseConfigurationMessageBody(char * body){
     if(!handled_ssid_pwd && found_ssid && found_pwd){
       Serial.print(F("Info: Trying to connect to target network"));
       wifi_connect_attempts++;
+
+      set_ssid(ssid);
+      set_network_password(pwd);     
+      set_network_security_mode("auto");      
+      
       if(esp.connectToNetwork((char *) ssid, (char *) pwd, 30000)){              
         Serial.print(F("Info: Successfully connected to Network \""));
         Serial.print(ssid);
         Serial.print(F("\""));
         Serial.println();
-        set_ssid(ssid);
-        set_network_password(pwd);     
-        set_network_security_mode("auto");
         wifi_can_connect = true;   
       }
       else{
