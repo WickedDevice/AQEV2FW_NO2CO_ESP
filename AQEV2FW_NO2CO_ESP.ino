@@ -49,6 +49,7 @@ PubSubClient mqtt_client;
 char mqtt_client_id[32] = {0};
 
 boolean wifi_can_connect = false;
+boolean wifi_connect_attempts = 0;
 boolean user_location_override = false;
 boolean gps_installed = false;
 
@@ -6820,11 +6821,12 @@ void doSoftApModeConfigBehavior(void){
     
   static const char whitelist[] PROGMEM = {
     '2',  '3',  '4',  '5',  '6',  '7',  '8',  '9',  
-    'A',  'B',  'C',  'D',  'E',  'F',  'G',  'H',  
-    'J',  'K',  'L',  'M',  'N',  'P',  'R',  'S',
-    'T',  'U',  'V',  'W',  'X',  'Y',  'Z',  'a',  
-    'b',  'c',  'd',  'e',  'f',  'g',  'h',  'i',  
-    'j',  'k',  'm',  'n',  'o',  'p',  'q',  'r',  
+//    'A',  'B',  'C',  'D',  'E',  'F',  'G',  'H',  
+//    'J',  'K',  'L',  'M',  'N',  'P',  'R',  'S',
+//    'T',  'U',  'V',  'W',  'X',  'Y',  'Z',  'a',  
+    'a', 'b',  'c',  'd',  'e',  'f',  'g',  'h',  'i',  
+//    'j',  'k',  'm',  'n',  'o',  'p',  'q',  'r',  
+    'j',  'k',  'm',  'n',  'o',  'p',  'r',  
     's',  't',  'u',  'v',  'w',  'x',  'y',  'z'
   };
   uint8_t _mac_address[6] = {0};
@@ -6963,6 +6965,9 @@ void doSoftApModeConfigBehavior(void){
                "\"temp_unit\":\"%s\","
                "\"ssid\":\"%s\","
                "\"wifi_conn\":%s,"
+               "\"attempts\":%d,"
+               "\"opmode\":\"%s\","
+               "\"has_sd\":%s,"
                "\"lat\":%s,"
                "\"lng\":%s,"
                "\"alt\":%s"
@@ -6973,6 +6978,7 @@ void doSoftApModeConfigBehavior(void){
             char userLat[16] = {0};
             char userLng[16] = {0};
             char userAlt[16] = {0};  
+            char operational_mode[16] = {0};  
             
             if(parseConfigurationMessageBody(scratch)){
               explicit_exit_softap = true;              
@@ -6986,6 +6992,17 @@ void doSoftApModeConfigBehavior(void){
             if(l_alt != -1){
               f_alt = 1.0f * l_alt;
             }
+
+            uint8_t m = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);
+            if(m == SUBMODE_NORMAL){
+              strcpy(operational_mode, "normal");
+            }
+            else if(m == SUBMODE_OFFLINE){
+              strcpy(operational_mode, "offline");
+            }
+            else{
+              strcpy(operational_mode, "unknown");
+            }
             
             floatToJsString(f_alt, userAlt, 2);
             floatToJsString(eeprom_read_float((float *) EEPROM_USER_LATITUDE_DEG), userLat, 6);
@@ -6998,6 +7015,7 @@ void doSoftApModeConfigBehavior(void){
             char * hasGPS = gps_installed ? (char *) true_string : (char *) false_string;
             char * useGPS = user_location_override ? (char *) false_string : (char *) true_string;
             char * wifiConn = wifi_can_connect ? (char *) true_string : (char *) false_string;
+            char * hasSD = init_sdcard_ok ? (char *) true_string : (char *) false_string;
                         
             char tempUnit[2] = {0};
             tempUnit[0] = eeprom_read_byte((const uint8_t *) EEPROM_TEMPERATURE_UNITS);          
@@ -7015,6 +7033,9 @@ void doSoftApModeConfigBehavior(void){
               tempUnit,
               ssid,
               wifiConn,
+              wifi_connect_attempts,
+              operational_mode,
+              hasSD,
               userLat,
               userLng,
               userAlt
@@ -7179,6 +7200,9 @@ boolean parseConfigurationMessageBody(char * body){
     else if(strcmp(key, "temp_unit") == 0){
       set_temperature_units(value);
     }
+    else if(strcmp(key, "opmode") == 0){
+      set_operational_mode(value);
+    }
     else{
       Serial.print(F("Warn: posted key \""));
       Serial.print(key);
@@ -7188,13 +7212,15 @@ boolean parseConfigurationMessageBody(char * body){
 
     if(!handled_ssid_pwd && found_ssid && found_pwd){
       Serial.print(F("Info: Trying to connect to target network"));
-      if(esp.connectToNetwork((char *) ssid, (char *) pwd, 30000)){      
+      wifi_connect_attempts++;
+      if(esp.connectToNetwork((char *) ssid, (char *) pwd, 30000)){              
         Serial.print(F("Info: Successfully connected to Network \""));
         Serial.print(ssid);
         Serial.print(F("\""));
         Serial.println();
         set_ssid(ssid);
         set_network_password(pwd);     
+        set_network_security_mode("auto");
         wifi_can_connect = true;   
       }
       else{
