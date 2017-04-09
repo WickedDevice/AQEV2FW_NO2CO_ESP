@@ -49,7 +49,7 @@ PubSubClient mqtt_client;
 char mqtt_client_id[32] = {0};
 
 boolean wifi_can_connect = false;
-boolean wifi_connect_attempts = 0;
+uint8_t wifi_connect_attempts = 0;
 boolean user_location_override = false;
 boolean gps_installed = false;
 
@@ -7063,33 +7063,7 @@ void doSoftApModeConfigBehavior(void){
 //
 //            clearTempBuffers();                               
           }          
-        }
-
-        // if we got an explicit command to exit softap mode. 
-        // commit configuration to mirrored backup if there were changes.
-        // this is different behavior from CLI mode, which requires
-        // successful connection to the target network to commit the configuration.
-        if(explicit_exit_softap){
-          if(!mirrored_config_matches_eeprom_config()){
-            Serial.println(F("Info: Detected configuration changes"));
-            if(checkConfigIntegrity()){              
-              commitConfigToMirroredConfig();
-            }
-            else {
-              Serial.print(F("Error: Integrity check failed, discarding changes..."));
-              if(mirrored_config_restore_and_validate()){
-                Serial.println(F("OK"));
-              }
-              else{
-                Serial.println(F("Failed"));
-              }
-            }
-          }
-          else{
-            Serial.println("Info: No configuration changes detected");
-          }
-        }
-        
+        }        
       }
       else{
         Serial.print(F("Error: Failed to start TCP server on port "));
@@ -7223,7 +7197,7 @@ boolean parseConfigurationMessageBody(char * body){
         Serial.print(ssid);
         Serial.print(F("\""));
         Serial.println();
-        wifi_can_connect = true;   
+        wifi_can_connect = true;      
       }
       else{
         Serial.print(F("Info: Unable to connect to Network \""));
@@ -7233,6 +7207,13 @@ boolean parseConfigurationMessageBody(char * body){
         wifi_can_connect = false;
       }
       handled_ssid_pwd = true;
+    }
+  }
+
+  // commit changes, because it's annoying to lose settings because of an Egg reset
+  if(!mirrored_config_matches_eeprom_config()){   
+    if(checkConfigIntegrity()){              
+      commitConfigToMirroredConfig();
     }
   }
 
