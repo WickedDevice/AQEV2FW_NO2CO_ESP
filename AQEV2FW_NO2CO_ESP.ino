@@ -5114,7 +5114,8 @@ float toFahrenheit(float degC){
 
 boolean publishTemperature(){
   clearTempBuffers();
-  float temperature_moving_average = calculateAverage(&(sample_buffer[TEMPERATURE_SAMPLE_BUFFER][0]), sample_buffer_depth);
+  uint16_t num_samples = temperature_ready ? sample_buffer_depth : sample_buffer_idx;  
+  float temperature_moving_average = calculateAverage(&(sample_buffer[TEMPERATURE_SAMPLE_BUFFER][0]), num_samples);
   temperature_degc = temperature_moving_average;
   float raw_temperature = temperature_degc;
   float reported_temperature = temperature_degc - reported_temperature_offset_degC;
@@ -5170,7 +5171,8 @@ boolean publishTemperature(){
 
 boolean publishHumidity(){
   clearTempBuffers();
-  float humidity_moving_average = calculateAverage(&(sample_buffer[HUMIDITY_SAMPLE_BUFFER][0]), sample_buffer_depth);
+  uint16_t num_samples = humidity_ready ? sample_buffer_depth : sample_buffer_idx;  
+  float humidity_moving_average = calculateAverage(&(sample_buffer[HUMIDITY_SAMPLE_BUFFER][0]), num_samples);
   relative_humidity_percent = humidity_moving_average;
   float raw_humidity = constrain(relative_humidity_percent, 0.0f, 100.0f);
   float reported_humidity = constrain(relative_humidity_percent - reported_humidity_offset_percent, 0.0f, 100.0f);
@@ -5250,7 +5252,7 @@ void collectTouch(void){
 }
 
 boolean processTouchVerbose(boolean verbose_output){
-  const uint32_t touch_event_threshold = 50UL;  
+  const uint32_t touch_event_threshold = 85UL;  
   static boolean first_time = true;
   static unsigned long touch_start_millis = 0UL;
   long backlight_interval = 60000L; 
@@ -5484,8 +5486,9 @@ void no2_convert_from_volts_to_ppb(float volts, float * converted_value, float *
 
 boolean publishNO2(){
   clearTempBuffers();
+  uint16_t num_samples = no2_ready ? sample_buffer_depth : sample_buffer_idx;  
   float converted_value = 0.0f, compensated_value = 0.0f;    
-  float no2_moving_average = calculateAverage(&(sample_buffer[NO2_SAMPLE_BUFFER][0]), sample_buffer_depth);
+  float no2_moving_average = calculateAverage(&(sample_buffer[NO2_SAMPLE_BUFFER][0]), num_samples);
   no2_convert_from_volts_to_ppb(no2_moving_average, &converted_value, &compensated_value);
   no2_ppb = compensated_value;  
   safe_dtostrf(no2_moving_average, -8, 5, raw_value_string, 16);
@@ -5639,8 +5642,9 @@ void co_convert_from_volts_to_ppm(float volts, float * converted_value, float * 
 
 boolean publishCO(){
   clearTempBuffers();  
+  uint16_t num_samples = co_ready ? sample_buffer_depth : sample_buffer_idx;  
   float converted_value = 0.0f, compensated_value = 0.0f;   
-  float co_moving_average = calculateAverage(&(sample_buffer[CO_SAMPLE_BUFFER][0]), sample_buffer_depth);
+  float co_moving_average = calculateAverage(&(sample_buffer[CO_SAMPLE_BUFFER][0]), num_samples);
   co_convert_from_volts_to_ppm(co_moving_average, &converted_value, &compensated_value);
   co_ppm = compensated_value;  
   safe_dtostrf(co_moving_average, -8, 5, raw_value_string, 16);
@@ -5747,8 +5751,8 @@ void loop_wifi_mqtt_mode(void){
         }
         
         if(init_sht25_ok){
-          if(temperature_ready){
-            if(!publishTemperature()){          
+          if(temperature_ready || (sample_buffer_idx > 0)){
+            if(!publishTemperature()){
               Serial.println(F("Error: Failed to publish Temperature."));          
             }
             else{
@@ -5769,7 +5773,7 @@ void loop_wifi_mqtt_mode(void){
         }
         
         if(init_sht25_ok){
-          if(humidity_ready){
+          if(humidity_ready || (sample_buffer_idx > 0)){
             if(!publishHumidity()){
               Serial.println(F("Error: Failed to publish Humidity."));         
             }
@@ -5787,7 +5791,7 @@ void loop_wifi_mqtt_mode(void){
         }
         
         if(init_no2_afe_ok && init_no2_adc_ok){
-          if(no2_ready){
+          if(no2_ready || (sample_buffer_idx > 0)){
             if(!publishNO2()){
               Serial.println(F("Error: Failed to publish NO2."));          
             }
@@ -5804,7 +5808,7 @@ void loop_wifi_mqtt_mode(void){
         }
         
         if(init_co_afe_ok && init_co_adc_ok){
-          if(co_ready){
+          if(co_ready || (sample_buffer_idx > 0)){
             if(!publishCO()){
               Serial.println(F("Error: Failed to publish CO."));         
             }
@@ -5912,9 +5916,11 @@ void printCsvDataLine(){
   printCurrentTimestamp(dataString, &dataStringRemaining);
   Serial.print(F(","));
   appendToString("," , dataString, &dataStringRemaining);
-  
-  if(temperature_ready){
-    temperature_degc = calculateAverage(&(sample_buffer[TEMPERATURE_SAMPLE_BUFFER][0]), sample_buffer_depth);
+
+  uint16_t num_samples = temperature_ready ? sample_buffer_depth : sample_buffer_idx;  
+
+  if(init_sht25_ok && (temperature_ready || (sample_buffer_idx > 0))){
+    temperature_degc = calculateAverage(&(sample_buffer[TEMPERATURE_SAMPLE_BUFFER][0]), num_samples);
     float reported_temperature = temperature_degc - reported_temperature_offset_degC;
     if(temperature_units == 'F'){
       reported_temperature = toFahrenheit(reported_temperature);
@@ -5930,8 +5936,9 @@ void printCsvDataLine(){
   Serial.print(F(","));
   appendToString("," , dataString, &dataStringRemaining);
   
-  if(humidity_ready){
-    relative_humidity_percent = calculateAverage(&(sample_buffer[HUMIDITY_SAMPLE_BUFFER][0]), sample_buffer_depth);
+num_samples = humidity_ready ? sample_buffer_depth : sample_buffer_idx;
+  if(init_sht25_ok && (humidity_ready || (sample_buffer_idx > 0))){
+    relative_humidity_percent = calculateAverage(&(sample_buffer[HUMIDITY_SAMPLE_BUFFER][0]), num_samples);
     float reported_relative_humidity = relative_humidity_percent - reported_humidity_offset_percent;        
     Serial.print(reported_relative_humidity, 2);
     appendToString(reported_relative_humidity, 2, dataString, &dataStringRemaining);
@@ -5945,9 +5952,10 @@ void printCsvDataLine(){
   appendToString("," , dataString, &dataStringRemaining);
   
   float no2_moving_average = 0.0f;
-  if(no2_ready){
+  num_samples = no2_ready ? sample_buffer_depth : sample_buffer_idx;
+  if(init_no2_afe_ok && init_no2_adc_ok && (no2_ready || (sample_buffer_idx > 0))){
     float converted_value = 0.0f, compensated_value = 0.0f;    
-    no2_moving_average = calculateAverage(&(sample_buffer[NO2_SAMPLE_BUFFER][0]), sample_buffer_depth);
+    no2_moving_average = calculateAverage(&(sample_buffer[NO2_SAMPLE_BUFFER][0]), num_samples);
     no2_convert_from_volts_to_ppb(no2_moving_average, &converted_value, &compensated_value);
     no2_ppb = compensated_value;      
     Serial.print(no2_ppb, 2);
@@ -5962,9 +5970,10 @@ void printCsvDataLine(){
   appendToString("," , dataString, &dataStringRemaining);
   
   float co_moving_average = 0.0f;
-  if(co_ready){    
+  num_samples = co_ready ? sample_buffer_depth : sample_buffer_idx;
+  if(init_co_afe_ok && init_co_adc_ok && (co_ready || (sample_buffer_idx > 0))){    
     float converted_value = 0.0f, compensated_value = 0.0f;   
-    co_moving_average = calculateAverage(&(sample_buffer[CO_SAMPLE_BUFFER][0]), sample_buffer_depth);
+    co_moving_average = calculateAverage(&(sample_buffer[CO_SAMPLE_BUFFER][0]), num_samples);
     co_convert_from_volts_to_ppm(co_moving_average, &converted_value, &compensated_value);
     co_ppm = compensated_value;     
     Serial.print(co_ppm, 2);
