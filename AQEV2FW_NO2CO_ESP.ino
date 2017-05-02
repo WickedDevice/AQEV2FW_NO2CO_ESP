@@ -44,6 +44,8 @@ WildFire_SPIFlash flash;
 CapacitiveSensor touch = CapacitiveSensor(A0, A1);
 LiquidCrystal lcd(A3, A2, 4, 5, 6, 8);
 char g_lcd_buffer[2][17] = {0}; // 2 rows of 16 characters each, with space for NULL terminator
+char last_painted[2][17] = {"                ","                "};
+
 byte mqtt_server_ip[4] = { 0 };    
 PubSubClient mqtt_client;
 char mqtt_client_id[32] = {0};
@@ -1038,6 +1040,7 @@ void initializeHardware(void) {
   // without this line, if the touch hardware is absent
   // serial input processing grinds to a snails pace
   touch.set_CS_Timeout_Millis(100); 
+  touch.set_CS_AutocaL_Millis(5000);
 
   Serial.println(F(" +------------------------------------+"));
   Serial.println(F(" |   Welcome to Air Quality Egg 2.0   |"));
@@ -4246,11 +4249,6 @@ void setLCD_P(const char * str PROGMEM){
 //}
 
 void repaintLCD(void){
-  static char last_painted[2][17] = {
-    "                ",
-    "                "
-  };
-  
   //dumpDisplayBuffer();      
   //  if(strlen((char *) &(g_lcd_buffer[0])) <= 16){
   //    lcd.setCursor(0,0);    
@@ -4271,8 +4269,8 @@ void repaintLCD(void){
         lcd.print(tmp);
       }
       last_painted[line][column] = g_lcd_buffer[line][column];
-    } 
-  }  
+    }
+  }
   
   g_lcd_buffer[0][16] = '\0'; // ensure null termination
   g_lcd_buffer[1][16] = '\0'; // ensure null termination  
@@ -4289,6 +4287,10 @@ void setLCD(const char * str){
 }
 
 void updateLCD(const char * str, uint8_t pos_x, uint8_t pos_y, uint8_t num_chars){
+  updateLCD(str, pos_x, pos_y, num_chars, true);
+}
+
+void updateLCD(const char * str, uint8_t pos_x, uint8_t pos_y, uint8_t num_chars, boolean repaint){
   uint16_t len = strlen(str);
   char * ptr = 0;
   if((pos_y == 0) || (pos_y == 1)){
@@ -4306,17 +4308,31 @@ void updateLCD(const char * str, uint8_t pos_x, uint8_t pos_y, uint8_t num_chars
       ptr[x] = ' ';
     }
   }
-  
-  repaintLCD();
+
+  if(repaint){
+    repaintLCD();
+  }
 }
 
 void clearLCD(){
+  clearLCD(true);
+}
+
+void clearLCD(boolean repaint){
   memset((uint8_t *) &(g_lcd_buffer[0]), ' ', 16);
   memset((uint8_t *) &(g_lcd_buffer[1]), ' ', 16);
+  memset((uint8_t *) &(last_painted[0]), ' ', 16);
+  memset((uint8_t *) &(last_painted[1]), ' ', 16);
+        
   g_lcd_buffer[0][16] = '\0';
-  g_lcd_buffer[1][16] = '\0';  
+  g_lcd_buffer[1][16] = '\0';
+  last_painted[0][16] = '\0';
+  last_painted[1][16] = '\0';      
+          
   lcd.clear();
-  repaintLCD();
+  if(repaint){
+    repaintLCD();
+  }
 }
 
 boolean index_of(char ch, char * str, uint16_t * index){
@@ -4496,6 +4512,10 @@ void leftpad_string(char * str, uint16_t target_length){
 }
 
 void updateLCD(float value, uint8_t pos_x, uint8_t pos_y, uint8_t field_width){
+  updateLCD(value, pos_x, pos_y, field_width, true);
+}
+
+void updateLCD(float value, uint8_t pos_x, uint8_t pos_y, uint8_t field_width, boolean repaint){
   static char tmp[64] = {0};
   static char asterisks_field[17] = {0};
   memset(tmp, 0, 64);
@@ -4525,7 +4545,7 @@ void updateLCD(float value, uint8_t pos_x, uint8_t pos_y, uint8_t field_width){
   //Serial.print(F("leftpad_string: "));
   //Serial.println(tmp);
       
-  updateLCD(tmp, pos_x, pos_y, field_width);  
+  updateLCD(tmp, pos_x, pos_y, field_width, repaint);  
 }
 
 void updateLCD(uint32_t ip, uint8_t line_number){
@@ -5737,10 +5757,10 @@ void loop_wifi_mqtt_mode(void){
       num_mqtt_intervals_without_wifi = 0;
       
       if(mqttReconnect()){         
-        updateLCD("TEMP ", 0, 0, 5);
-        updateLCD("RH ", 10, 0, 3);         
-        updateLCD("NO2 ", 0, 1, 4);
-        updateLCD("CO ", 10, 1, 3);
+        updateLCD("TEMP ", 0, 0, 5, false);
+        updateLCD("RH ", 10, 0, 3, false);         
+        updateLCD("NO2 ", 0, 1, 4, false);
+        updateLCD("CO ", 10, 1, 3, false);
                       
         //connected to MQTT server and connected to Wi-Fi network        
         num_mqtt_connect_retries = 0;   
@@ -5760,16 +5780,16 @@ void loop_wifi_mqtt_mode(void){
               if(temperature_units == 'F'){
                 reported_temperature = toFahrenheit(reported_temperature);
               }
-              updateLCD(reported_temperature, 5, 0, 3);             
+              updateLCD(reported_temperature, 5, 0, 3, false);             
             }
           }
           else{
-            updateLCD("---", 5, 0, 3);
+            updateLCD("---", 5, 0, 3, false);
           }        
         }
         else{
           // sht25 is not ok
-          updateLCD("XXX", 5, 0, 3);
+          updateLCD("XXX", 5, 0, 3, false);
         }
         
         if(init_sht25_ok){
@@ -5779,15 +5799,15 @@ void loop_wifi_mqtt_mode(void){
             }
             else{
               float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
-              updateLCD(reported_relative_humidity_percent, 13, 0, 3);  
+              updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);  
             }
           }
           else{
-            updateLCD("---", 13, 0, 3);
+            updateLCD("---", 13, 0, 3, false);
           }
         }
         else{
-          updateLCD("XXX", 13, 0, 3);
+          updateLCD("XXX", 13, 0, 3, false);
         }
         
         if(init_no2_afe_ok && init_no2_adc_ok){
@@ -5796,15 +5816,15 @@ void loop_wifi_mqtt_mode(void){
               Serial.println(F("Error: Failed to publish NO2."));          
             }
             else{
-              updateLCD(no2_ppb, 5, 1, 3);  
+              updateLCD(no2_ppb, 5, 1, 3, false);  
             }
           }
           else{
-            updateLCD("---", 5, 1, 3); 
+            updateLCD("---", 5, 1, 3, false); 
           }
         }
         else{
-          updateLCD("XXX", 5, 1, 3); 
+          updateLCD("XXX", 5, 1, 3, false); 
         }
         
         if(init_co_afe_ok && init_co_adc_ok){
@@ -5813,17 +5833,18 @@ void loop_wifi_mqtt_mode(void){
               Serial.println(F("Error: Failed to publish CO."));         
             }
             else{
-              updateLCD(co_ppm, 13, 1, 3); 
+              updateLCD(co_ppm, 13, 1, 3, false); 
             }
           }
           else{
-            updateLCD("---", 13, 1, 3);  
+            updateLCD("---", 13, 1, 3, false);  
           }
         }
         else{
-          updateLCD("XXX", 13, 1, 3);
+          updateLCD("XXX", 13, 1, 3, false);
         }
-    
+
+        repaintLCD();
       }
       else{
         // not connected to MQTT server
@@ -5878,8 +5899,10 @@ void loop_offline_mode(void){
   
   // write record timer intervals
   static unsigned long previous_write_record_millis = 0;
+  static boolean first = true;
 
-  if(current_millis - previous_write_record_millis >= reporting_interval){ 
+  if(first || (current_millis - previous_write_record_millis >= reporting_interval)){ 
+    first = false;
     suspendGpsProcessing();   
     previous_write_record_millis = current_millis;
     printCsvDataLine();
@@ -5901,6 +5924,7 @@ void printCsvDataLine(){
   static boolean first = true;
   char * dataString = &(scratch[0]);  
   clearTempBuffers();
+  static uint32_t call_counter = 0;
   
   uint16_t len = 0;
   uint16_t dataStringRemaining = SCRATCH_BUFFER_SIZE-1;
@@ -5936,7 +5960,7 @@ void printCsvDataLine(){
   Serial.print(F(","));
   appendToString("," , dataString, &dataStringRemaining);
   
-num_samples = humidity_ready ? sample_buffer_depth : sample_buffer_idx;
+  num_samples = humidity_ready ? sample_buffer_depth : sample_buffer_idx;
   if(init_sht25_ok && (humidity_ready || (sample_buffer_idx > 0))){
     relative_humidity_percent = calculateAverage(&(sample_buffer[HUMIDITY_SAMPLE_BUFFER][0]), num_samples);
     float reported_relative_humidity = relative_humidity_percent - reported_humidity_offset_percent;        
@@ -6003,29 +6027,77 @@ num_samples = humidity_ready ? sample_buffer_depth : sample_buffer_idx;
   Serial.println();
   appendToString("\n", dataString, &dataStringRemaining);   
   
-  if((mode == SUBMODE_OFFLINE) && init_sdcard_ok){
-    char filename[16] = {0};
-    getNowFilename(filename, 15);     
-    File dataFile = SD.open(filename, FILE_WRITE);
-    if (dataFile) {
-      dataFile.print(dataString);
-      dataFile.close();
+  if((call_counter % 10) == 0){ // once every 10 reports    
+    clearLCD(false);
+    if((mode == SUBMODE_OFFLINE) && init_sdcard_ok){
+      char filename[16] = {0};
+      getNowFilename(filename, 15);     
+      File dataFile = SD.open(filename, FILE_WRITE);
+      if (dataFile) {
+        dataFile.print(dataString);
+        dataFile.close();
+        setLCD_P(PSTR("  LOGGING DATA  "
+                      "   TO SD CARD   "));   
+      }
+      else {
+        Serial.print("Error: Failed to open SD card file named \"");
+        Serial.print(filename);
+        Serial.println(F("\""));
+        setLCD_P(PSTR("  SD CARD FILE  "
+                      "  OPEN FAILED   "));
+        lcdFrownie(15, 1);      
+      }
+    }
+    else if((mode == SUBMODE_OFFLINE) && !init_sdcard_ok){
       setLCD_P(PSTR("  LOGGING DATA  "
-                    "   TO SD CARD   "));   
-    }
-    else {
-      Serial.print("Error: Failed to open SD card file named \"");
-      Serial.print(filename);
-      Serial.println(F("\""));
-      setLCD_P(PSTR("  SD CARD FILE  "
-                    "  OPEN FAILED   "));
-      lcdFrownie(15, 1);      
-    }
+                    "  TO USB-SERIAL "));
+    }    
   }
-  else if((mode == SUBMODE_OFFLINE) && !init_sdcard_ok){
-    setLCD_P(PSTR("  LOGGING DATA  "
-                  "  TO USB-SERIAL "));
+  else { // otherwise display the data
+    clearLCD(false);
+    updateLCD("TEMP ", 0, 0, 5, false);
+    updateLCD("RH ", 10, 0, 3, false);         
+    updateLCD("NO2 ", 0, 1, 4, false);
+    updateLCD("CO ", 10, 1, 3, false);
+                      
+    if(init_sht25_ok){
+      float reported_temperature = temperature_degc - reported_temperature_offset_degC;
+      if(temperature_units == 'F'){
+        reported_temperature = toFahrenheit(reported_temperature);
+      }
+      updateLCD(reported_temperature, 5, 0, 3, false);             
+    }
+    else{
+      // sht25 is not ok
+      updateLCD("XXX", 5, 0, 3, false);
+    }
+    
+    if(init_sht25_ok){
+      float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
+      updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);        
+    }
+    else{
+      updateLCD("XXX", 13, 0, 3, false);
+    }
+    
+    if(init_no2_afe_ok && init_no2_adc_ok){
+      updateLCD(no2_ppb, 5, 1, 3, false);  
+    }
+    else{
+      updateLCD("XXX", 5, 1, 3, false); 
+    }
+    
+    if(init_co_afe_ok && init_co_adc_ok){
+      updateLCD(co_ppm, 13, 1, 3, false); 
+    }
+    else{
+      updateLCD("XXX", 13, 1, 3, false);
+    }
+
+    repaintLCD();    
   }
+  
+  call_counter++;
 }
 
 boolean mode_requires_wifi(uint8_t opmode){
