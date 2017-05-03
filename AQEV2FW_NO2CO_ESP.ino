@@ -106,7 +106,8 @@ float user_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
 #define CO_SAMPLE_BUFFER          (1)
 #define TEMPERATURE_SAMPLE_BUFFER (2)
 #define HUMIDITY_SAMPLE_BUFFER    (3)
-float sample_buffer[4][MAX_SAMPLE_BUFFER_DEPTH] = {0};
+#define NUM_SAMPLE_BUFFERS        (4)
+float sample_buffer[NUM_SAMPLE_BUFFERS][MAX_SAMPLE_BUFFER_DEPTH] = {0};
 uint16_t sample_buffer_idx = 0;
 
 uint32_t sampling_interval = 0;    // how frequently the sensorss are sampled
@@ -1249,6 +1250,12 @@ void initializeHardware(void) {
   updateLCD("NO2 / CO", 0);
   updateLCD("MODEL", 1);
   SUCCESS_MESSAGE_DELAY();  
+
+
+  // put the same thing in for the GPS pins 
+  // just to be on the safe side
+  pinMode(18, INPUT_PULLUP);
+  pinMode(17, OUTPUT);
   
 }
 
@@ -5329,7 +5336,7 @@ void advanceSampleBufferIndex(void){
 }
 
 void addSample(uint8_t sample_type, float value){
-  if((sample_type < 4) && (sample_buffer_idx < MAX_SAMPLE_BUFFER_DEPTH)){
+  if((sample_type < NUM_SAMPLE_BUFFERS) && (sample_buffer_idx < MAX_SAMPLE_BUFFER_DEPTH)){
     sample_buffer[sample_type][sample_buffer_idx] = value;    
   }
 }
