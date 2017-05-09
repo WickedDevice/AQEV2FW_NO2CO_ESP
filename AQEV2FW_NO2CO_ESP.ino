@@ -544,7 +544,6 @@ void setup() {
 
   // initialize hardware
   initializeHardware();
-  backlightOff();
 
   //  uint8_t tmp[EEPROM_CONFIG_MEMORY_SIZE] = {0};
   //  get_eeprom_config(tmp);
@@ -668,7 +667,8 @@ void setup() {
       }
     }
     Serial.println();
-
+    backlightOn();
+    
     if(soft_ap_config_activated){
       configInject("aqe\r");
       do{
@@ -758,11 +758,11 @@ void setup() {
       prompt();
       for (;;) {
         current_millis = millis();
-        if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
-          previous_touch_sampling_millis = current_millis;
-          collectTouch();
-          processTouchQuietly();
-        }
+//        if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){
+//          previous_touch_sampling_millis = current_millis;
+//          collectTouch();
+//          processTouchQuietly();
+//        }
 
         // check to determine if we have a GPS
         while(!gps_installed && gpsSerial.available()){
@@ -925,6 +925,7 @@ void setup() {
   }
 
   resumeGpsProcessing();
+  backlightOff();
 }
 
 void loop() {
@@ -7286,7 +7287,7 @@ boolean parseConfigurationMessageBody(char * body){
       set_network_password(pwd);
       set_network_security_mode("auto");
 
-      if(esp.connectToNetwork((char *) ssid, (char *) pwd, 30000)){
+      if(esp.connectToNetwork((char *) ssid, (char *) pwd, 45000)){
         Serial.print(F("Info: Successfully connected to Network \""));
         Serial.print(ssid);
         Serial.print(F("\""));
