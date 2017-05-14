@@ -22,7 +22,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 2
-#define AQEV2FW_PATCH_VERSION 0
+#define AQEV2FW_PATCH_VERSION 1
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -6041,76 +6041,88 @@ void printCsvDataLine(){
   Serial.println();
   appendToString("\n", dataString, &dataStringRemaining);
 
-  if((call_counter % 10) == 0){ // once every 10 reports
-    clearLCD(false);
-    if((mode == SUBMODE_OFFLINE) && init_sdcard_ok){
-      char filename[16] = {0};
-      getNowFilename(filename, 15);
-      File dataFile = SD.open(filename, FILE_WRITE);
-      if (dataFile) {
-        dataFile.print(dataString);
-        dataFile.close();
+  boolean sdcard_write_succeeded = true;
+  char filename[16] = {0};
+  if(init_sdcard_ok){
+    getNowFilename(filename, 15);
+    File dataFile = SD.open(filename, FILE_WRITE);          
+    if(dataFile) {      
+      dataFile.print(dataString);
+      dataFile.close();    
+    }
+    else{
+      sdcard_write_succeeded = false;
+    }
+  }
+
+  if(mode == SUBMODE_OFFLINE){
+    if(((call_counter % 10) == 0) && sdcard_write_succeeded){ // once every 10 reports    
+      clearLCD(false);    
+      if(init_sdcard_ok){
         setLCD_P(PSTR("  LOGGING DATA  "
-                      "   TO SD CARD   "));
+                      "   TO SD CARD   "));     
       }
-      else {
-        Serial.print("Error: Failed to open SD card file named \"");
-        Serial.print(filename);
-        Serial.println(F("\""));
-        setLCD_P(PSTR("  SD CARD FILE  "
-                      "  OPEN FAILED   "));
-        lcdFrownie(15, 1);
+      else{ // if(!init_sdcard_ok)
+        setLCD_P(PSTR("  LOGGING DATA  "
+                      "  TO USB-SERIAL "));
+      }    
+      repaintLCD();    
+    }
+    else if(sdcard_write_succeeded){ // otherwise display the data (implied, or no sd card installed)
+      clearLCD(false);
+      updateLCD("TEMP ", 0, 0, 5, false);
+      updateLCD("RH ", 10, 0, 3, false);
+      updateLCD("NO2 ", 0, 1, 4, false);
+      updateLCD("CO ", 10, 1, 3, false);
+  
+      if(init_sht25_ok){
+        float reported_temperature = temperature_degc - reported_temperature_offset_degC;
+        if(temperature_units == 'F'){
+          reported_temperature = toFahrenheit(reported_temperature);
+        }
+        updateLCD(reported_temperature, 5, 0, 3, false);
       }
-    }
-    else if((mode == SUBMODE_OFFLINE) && !init_sdcard_ok){
-      setLCD_P(PSTR("  LOGGING DATA  "
-                    "  TO USB-SERIAL "));
-    }
+      else{
+        // sht25 is not ok
+        updateLCD("XXX", 5, 0, 3, false);
+      }
+  
+      if(init_sht25_ok){
+        float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
+        updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
+      }
+      else{
+        updateLCD("XXX", 13, 0, 3, false);
+      }
+  
+      if(init_no2_afe_ok && init_no2_adc_ok){
+        updateLCD(no2_ppb, 5, 1, 3, false);
+      }
+      else{
+        updateLCD("XXX", 5, 1, 3, false);
+      }
+  
+      if(init_co_afe_ok && init_co_adc_ok){
+        updateLCD(co_ppm, 13, 1, 3, false);
+      }
+      else{
+        updateLCD("XXX", 13, 1, 3, false);
+      }
+  
+      repaintLCD();
+    }    
+    else { // if( !sdcard_write_succeeded )
+      Serial.print("Error: Failed to open SD card file named \"");
+      Serial.print(filename);
+      Serial.println(F("\""));
+      clearLCD(false);
+      setLCD_P(PSTR("  SD CARD FILE  "
+                    "  OPEN FAILED   "));
+      lcdFrownie(15, 1);          
+    }    
+          
   }
-  else { // otherwise display the data
-    clearLCD(false);
-    updateLCD("TEMP ", 0, 0, 5, false);
-    updateLCD("RH ", 10, 0, 3, false);
-    updateLCD("NO2 ", 0, 1, 4, false);
-    updateLCD("CO ", 10, 1, 3, false);
-
-    if(init_sht25_ok){
-      float reported_temperature = temperature_degc - reported_temperature_offset_degC;
-      if(temperature_units == 'F'){
-        reported_temperature = toFahrenheit(reported_temperature);
-      }
-      updateLCD(reported_temperature, 5, 0, 3, false);
-    }
-    else{
-      // sht25 is not ok
-      updateLCD("XXX", 5, 0, 3, false);
-    }
-
-    if(init_sht25_ok){
-      float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
-      updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
-    }
-    else{
-      updateLCD("XXX", 13, 0, 3, false);
-    }
-
-    if(init_no2_afe_ok && init_no2_adc_ok){
-      updateLCD(no2_ppb, 5, 1, 3, false);
-    }
-    else{
-      updateLCD("XXX", 5, 1, 3, false);
-    }
-
-    if(init_co_afe_ok && init_co_adc_ok){
-      updateLCD(co_ppm, 13, 1, 3, false);
-    }
-    else{
-      updateLCD("XXX", 13, 1, 3, false);
-    }
-
-    repaintLCD();
-  }
-
+  
   call_counter++;
 }
 
