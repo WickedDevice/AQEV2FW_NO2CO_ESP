@@ -18,11 +18,14 @@
 #include <TinyGPS.h>
 #include <SoftwareSerial.h>
 #include <jsmn.h>
+#include <SoftReset.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP280.h>
 
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 2
-#define AQEV2FW_PATCH_VERSION 1
+#define AQEV2FW_PATCH_VERSION 2
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -54,12 +57,14 @@ boolean wifi_can_connect = false;
 uint8_t wifi_connect_attempts = 0;
 boolean user_location_override = false;
 boolean gps_installed = false;
+boolean display_offline_mode_banner = false;
 
 RTC_DS3231 rtc;
 SdFat SD;
 
 TinyGPS gps;
 SoftwareSerial gpsSerial(18, 17); // RX, TX
+Adafruit_BMP280 bme;
 boolean gps_disabled = false;
 #define GPS_MQTT_STRING_LENGTH (128)
 #define GPS_CSV_STRING_LENGTH (64)
@@ -86,11 +91,14 @@ float temperature_degc = 0.0f;
 float relative_humidity_percent = 0.0f;
 float no2_ppb = 0.0f;
 float co_ppm = 0.0f;
+float pressure_pa = 0.0f;
 
 float instant_temperature_degc = 0.0f;
 float instant_humidity_percent = 0.0f;
 float instant_no2_v = 0.0f;
 float instant_co_v = 0.0f;
+float instant_pressure_pa = 0.0f;
+float instant_altitude_m = 0.0f;
 
 float gps_latitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float gps_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
@@ -101,12 +109,13 @@ float user_latitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float user_longitude = TinyGPS::GPS_INVALID_F_ANGLE;
 float user_altitude = TinyGPS::GPS_INVALID_F_ALTITUDE;
 
-#define MAX_SAMPLE_BUFFER_DEPTH (180) // 15 minutes @ 5 second resolution
+#define MAX_SAMPLE_BUFFER_DEPTH (120) // 10 minutes @ 5 second resolution
 #define NO2_SAMPLE_BUFFER         (0)
 #define CO_SAMPLE_BUFFER          (1)
 #define TEMPERATURE_SAMPLE_BUFFER (2)
 #define HUMIDITY_SAMPLE_BUFFER    (3)
-#define NUM_SAMPLE_BUFFERS        (4)
+#define PRESSURE_SAMPLE_BUFFER    (4)
+#define NUM_SAMPLE_BUFFERS        (5)
 float sample_buffer[NUM_SAMPLE_BUFFERS][MAX_SAMPLE_BUFFER_DEPTH] = {0};
 uint16_t sample_buffer_idx = 0;
 
@@ -127,6 +136,7 @@ boolean no2_ready = false;
 boolean co_ready = false;
 boolean temperature_ready = false;
 boolean humidity_ready = false;
+boolean pressure_ready = false;
 
 boolean init_sht25_ok = false;
 boolean init_co_afe_ok = false;
@@ -137,6 +147,7 @@ boolean init_spi_flash_ok = false;
 boolean init_esp8266_ok = false;
 boolean init_sdcard_ok = false;
 boolean init_rtc_ok = false;
+boolean init_bmp280_ok = false;
 
 typedef struct{
   float temperature_degC;     // starting at this temperature
@@ -188,7 +199,7 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_CO_CAL_SLOPE       (EEPROM_CO_SENSITIVITY - 4)     // float value, 4-bytes, the slope applied to the sensor
 #define EEPROM_CO_CAL_OFFSET      (EEPROM_CO_CAL_SLOPE - 4)       // float value, 4-bytes, the offset applied to the sensor
 #define EEPROM_PRIVATE_KEY        (EEPROM_CO_CAL_OFFSET - 32)     // 32-bytes of Random Data (256-bits)
-#define EEPROM_MQTT_SERVER_NAME   (EEPROM_PRIVATE_KEY - 32)       // string, the DNS name of the MQTT server (default mqtt.opensensors.io), up to 32 characters (one of which is a null terminator)
+#define EEPROM_MQTT_SERVER_NAME   (EEPROM_PRIVATE_KEY - 32)       // string, the DNS name of the MQTT server (default mqtt.wickeddevice.com), up to 32 characters (one of which is a null terminator)
 #define EEPROM_MQTT_USERNAME      (EEPROM_MQTT_SERVER_NAME - 32)  // string, the user name for the MQTT server (default wickeddevice), up to 32 characters (one of which is a null terminator)
 #define EEPROM_MQTT_CLIENT_ID     (EEPROM_MQTT_USERNAME - 32)     // string, the client identifier for the MQTT server (default SHT25 identifier), between 1 and 23 characters long
 #define EEPROM_MQTT_AUTH          (EEPROM_MQTT_CLIENT_ID - 1)     // MQTT authentication enabled, single byte value 0 = disabled or 1 = enabled
@@ -533,6 +544,7 @@ const char * header_row = "Timestamp,"
                "CO[ppm],"
                "NO2[V],"
                "CO[V],"
+               "Pressure[Pa],"
                "Latitude[deg],"
                "Longitude[deg],"
                "Altitude[m]";
@@ -729,12 +741,12 @@ void setup() {
     Serial.println();
     delayForWatchdog();
 
-    while((mode == MODE_CONFIG) || (mode_requires_wifi(target_mode) && !valid_ssid_passed) ) {
+    while((mode == MODE_CONFIG) || ((mode_requires_wifi(target_mode) && !valid_ssid_passed))) {
       allowed_to_write_config_eeprom = true;
       const uint32_t idle_timeout_period_ms = 1000UL * 60UL * 5UL; // 5 minutes
       uint32_t idle_time_ms = 0;
       Serial.println(F("-~=* In CONFIG Mode *=~-"));
-      if(integrity_check_passed && valid_ssid_passed){
+      if(integrity_check_passed){
         setLCD_P(PSTR("  CONFIG MODE"));
       }
 
@@ -781,6 +793,7 @@ void setup() {
           idle_time_ms = 0;
           // if you get serial traffic, pass it along to the configModeStateMachine for consumption
           if (CONFIG_MODE_GOT_EXIT == configModeStateMachine(Serial.read(), false)) {
+            mode = MODE_OPERATIONAL;
             break;
           }
         }
@@ -809,12 +822,13 @@ void setup() {
     ok_to_exit_config_mode = true;
 
     target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);
-
     if(!integrity_check_passed){
       ok_to_exit_config_mode = false;
+      mode = MODE_CONFIG;
     }
     else if(mode_requires_wifi(target_mode) && !valid_ssid_passed){
       ok_to_exit_config_mode = false;
+      mode = MODE_CONFIG;
     }
 
   } while(!ok_to_exit_config_mode);
@@ -865,6 +879,7 @@ void setup() {
 
     // Check for Firmware Updates
     checkForFirmwareUpdates();
+    checkForESPFirmwareUpdates();
     integrity_check_passed = checkConfigIntegrity();
     if(!integrity_check_passed){
       Serial.println(F("Error: Config Integrity Check Failed after checkForFirmwareUpdates"));
@@ -928,6 +943,113 @@ void setup() {
   backlightOff();
 }
 
+void updateDisplayedSensors(){
+  static uint8_t current_displayed_page = 0;
+  static boolean first = true;
+  static unsigned long previous_display_update = 0;
+  const long display_update_interval = 15000;  
+  uint8_t NUM_DISPLAY_PAGES = init_bmp280_ok ? 2 : 1;
+  
+  if(first || ((current_millis - previous_display_update) >= display_update_interval)){
+    previous_display_update = current_millis;
+    clearLCD(false);
+    
+    if(display_offline_mode_banner){      
+      if(init_sdcard_ok){
+        setLCD_P(PSTR("  LOGGING DATA  "
+                      "   TO SD CARD   "));     
+      }
+      else{ // if(!init_sdcard_ok)
+        setLCD_P(PSTR("  LOGGING DATA  "
+                      "  TO USB-SERIAL "));
+      }    
+      repaintLCD();       
+      first = false;
+      return;
+    }
+
+    switch(current_displayed_page){    
+    case 1:
+      if(init_bmp280_ok){
+        updateLCD("BP ", 0, 0, 3, false);    
+        if(pressure_ready || (sample_buffer_idx > 0)){          
+          updateLCD(pressure_pa / 1000.0f, 3, 0, 5, false);
+        }
+        else{
+          updateLCD("---", 3, 0, 5, false);
+        }
+      }    
+      break;
+    case 0:
+    default:
+      updateLCD("TEMP ", 0, 0, 5, false);
+      updateLCD("RH ", 10, 0, 3, false);
+      updateLCD("NO2 ", 0, 1, 4, false);
+      updateLCD("CO ", 10, 1, 3, false);
+      if(init_sht25_ok){
+        if(temperature_ready|| (sample_buffer_idx > 0)){
+          float reported_temperature = temperature_degc - reported_temperature_offset_degC;
+          if(temperature_units == 'F'){
+            reported_temperature = toFahrenheit(reported_temperature);
+          }
+          updateLCD(reported_temperature, 5, 0, 3, false);
+        }
+        else{
+          updateLCD("---", 5, 0, 3, false);
+        }
+      }
+      else{
+        // sht25 is not ok
+        updateLCD("XXX", 5, 0, 3, false);
+      }
+
+      if(init_sht25_ok){
+        if(humidity_ready || (sample_buffer_idx > 0)){
+          float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
+          updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
+        }
+        else{
+          updateLCD("---", 13, 0, 3, false);
+        }
+      }
+      else{
+        updateLCD("XXX", 13, 0, 3, false);
+      }
+
+      if(init_no2_afe_ok && init_no2_adc_ok){
+        if(no2_ready || (sample_buffer_idx > 0)){
+          updateLCD(no2_ppb, 5, 1, 3, false);
+        }
+        else{
+          updateLCD("---", 5, 1, 3, false);
+        }
+      }
+      else{
+        updateLCD("XXX", 5, 1, 3, false);
+      }
+
+      if(init_co_afe_ok && init_co_adc_ok){
+        if(co_ready || (sample_buffer_idx > 0)){
+          updateLCD(co_ppm, 13, 1, 3, false);
+        }
+        else{
+          updateLCD("---", 13, 1, 3, false);
+        }
+      }
+      else{
+        updateLCD("XXX", 13, 1, 3, false);
+      }        
+      break;             
+    }  
+    
+    repaintLCD();   
+    
+    current_displayed_page++;
+    current_displayed_page = current_displayed_page % NUM_DISPLAY_PAGES;
+  }
+  first = false;
+}
+
 void loop() {
   current_millis = millis();
   static boolean first = true;
@@ -969,6 +1091,7 @@ void loop() {
     collectCO();
     collectTemperature();
     collectHumidity();
+    collectPressure();
     advanceSampleBufferIndex();
   }
 
@@ -1004,6 +1127,8 @@ void loop() {
   if(gps_disabled){
     resumeGpsProcessing();
   }
+
+  updateDisplayedSensors();
 }
 
 /****** INITIALIZATION SUPPORT FUNCTIONS ******/
@@ -1234,6 +1359,16 @@ void initializeHardware(void) {
     init_co_adc_ok = false;
   }
 
+  Serial.print(F("Info: BMP280 Initialization..."));
+  if (!bme.begin()) { 
+    Serial.println(F("Fail."));
+    init_bmp280_ok = false;
+  }
+  else{
+    Serial.println(F("OK."));
+    init_bmp280_ok = true;
+  }
+
   // Initialize SD card
   Serial.print(F("Info: RTC Initialization..."));
   selectSlot3();
@@ -1383,6 +1518,35 @@ void initializeNewConfigSettings(void){
     }
 
     recomputeAndStoreConfigChecksum();
+  }
+
+  // re-configure from mqtt.opensensors.io to mqtt.wickeddevice.com
+  clearTempBuffers();
+  eeprom_read_block(command_buf, (const void *) EEPROM_MQTT_SERVER_NAME, 32);
+  if(strcmp_P(command_buf, PSTR("mqtt.opensensors.io")) == 0){
+    memset(command_buf, 0, 128);
+    eeprom_read_block(command_buf, (const void *) EEPROM_MQTT_USERNAME, 32);
+    if(strcmp_P(command_buf, PSTR("wickeddevice")) == 0){      
+      eeprom_read_block(converted_value_string, (const void *) EEPROM_MQTT_CLIENT_ID, 32);
+      if(strncmp_P(converted_value_string, PSTR("egg"), 3) == 0){
+        
+        if(!in_config_mode){
+          configInject("aqe\r");
+          in_config_mode = true;
+        }        
+        
+        // change the mqtt server to mqtt.wickeddevice.com
+        // and change the mqtt username to the egg serial number
+        // effectively:
+        //   configInject("mqttsrv mqtt.wickeddevice.com\r");
+        //   configInject("mqttuser egg-serial-number \r");
+        configInject("mqttsrv mqtt.wickeddevice.com\r");
+        strcpy_P(raw_instant_value_string, PSTR("mqttuser "));
+        strcat(raw_instant_value_string, converted_value_string);
+        strcat_P(raw_instant_value_string, PSTR("\r"));
+        configInject(raw_instant_value_string);
+      }      
+    }
   }
 
   if(in_config_mode){
@@ -2282,7 +2446,7 @@ void restore(char * arg) {
   // 2. MQTT Password            0x40
   // 3. Private Key              0x20
   // 4. NO2 Calibration Values   0x10
-  // 5. CO Calibratino Values    0x80
+  // 5. CO Calibration Values    0x80
 
   uint16_t backup_check = eeprom_read_word((const uint16_t *) EEPROM_BACKUP_CHECK);
 
@@ -2297,10 +2461,10 @@ void restore(char * arg) {
     configInject("altitude -1\r");
     configInject("backlight 60\r");
     configInject("backlight initon\r");
-    configInject("mqttsrv mqtt.opensensors.io\r");
+    configInject("mqttsrv mqtt.wickeddevice.com\r");
     configInject("mqttport 1883\r");
     configInject("mqttauth enable\r");
-    configInject("mqttuser wickeddevice\r");
+    // configInject("mqttuser wickeddevice\r");
     configInject("mqttprefix /orgs/wd/aqe/\r");
     configInject("mqttsuffix enable\r");
     configInject("sampling 5, 600, 60\r"); // sample every 5 seconds, average over 10 minutes, report every minute
@@ -2317,6 +2481,10 @@ void restore(char * arg) {
     configInject("restore no2\r");
     configInject("restore co\r");
     configInject("restore mac\r");
+
+    // copy the MQTT ID to the MQTT Username
+    eeprom_read_block((void *) tmp, (const void *) EEPROM_MQTT_CLIENT_ID, 32);
+    eeprom_write_block((void *) tmp, (void *) EEPROM_MQTT_USERNAME, 32);
 
     eeprom_write_block(blank, (void *) EEPROM_SSID, 32); // clear the SSID
     eeprom_write_block(blank, (void *) EEPROM_NETWORK_PWD, 32); // clear the Network Password
@@ -3106,20 +3274,24 @@ void printDirectory(File dir, int numTabs) {
        // no more files
        break;
      }
-     for (uint8_t i=0; i<numTabs; i++) {
-       Serial.print(F("\t"));
-     }
+     
      char tmp[16] = {0};
-     entry.getName(tmp, 16);
-     Serial.print(tmp);
-     if (entry.isDirectory()) {
-       Serial.println(F("/"));
-       printDirectory(entry, numTabs+1);
-     } else {
-       // files have sizes, directories do not
-       Serial.print(F("\t"));
-       Serial.print(F("\t"));
-       Serial.println(entry.size(), DEC);
+     entry.getName(tmp, 16);          
+     if(tmp[0] != '.'){                 
+       Serial.print(tmp);
+  
+       for (uint8_t i=0; i<numTabs; i++) {
+         Serial.print(F("\t"));
+       }
+       if (entry.isDirectory()) {
+         Serial.println(F("/"));
+         printDirectory(entry, numTabs+1);
+       } else {
+         // files have sizes, directories do not
+         Serial.print(F("\t"));
+         Serial.print(F("\t"));
+         Serial.println(entry.size(), DEC);
+       }
      }
      entry.close();
    }
@@ -5116,15 +5288,18 @@ boolean publishHeartbeat(){
   clearTempBuffers();
   static uint32_t post_counter = 0;
   uint8_t sample = pgm_read_byte(&heartbeat_waveform[heartbeat_waveform_index++]);
-
+  char hasPressureString[16] = {0};
+  if(init_bmp280_ok){
+    strcpy_P(hasPressureString,PSTR(",\"pressure\""));
+  }
   snprintf(scratch, SCRATCH_BUFFER_SIZE-1,
   "{"
   "\"serial-number\":\"%s\","
   "\"converted-value\":%d,"
   "\"firmware-version\":\"%s\","
-  "\"publishes\":[\"no2\",\"co\",\"temperature\",\"humidity\"],"
+  "\"publishes\":[\"no2\",\"co\",\"temperature\",\"humidity\"%s],"
   "\"counter\":%lu"
-  "}", mqtt_client_id, sample, firmware_version, post_counter++);
+  "}", mqtt_client_id, sample, firmware_version, hasPressureString, post_counter++);
 
   if(heartbeat_waveform_index >= NUM_HEARTBEAT_WAVEFORM_SAMPLES){
      heartbeat_waveform_index = 0;
@@ -5344,6 +5519,17 @@ void advanceSampleBufferIndex(void){
 void addSample(uint8_t sample_type, float value){
   if((sample_type < NUM_SAMPLE_BUFFERS) && (sample_buffer_idx < MAX_SAMPLE_BUFFER_DEPTH)){
     sample_buffer[sample_type][sample_buffer_idx] = value;
+  }
+}
+
+void collectPressure(void){
+  if(init_bmp280_ok){
+    instant_pressure_pa = bme.readPressure();
+    instant_altitude_m = bme.readAltitude();
+    addSample(PRESSURE_SAMPLE_BUFFER, instant_pressure_pa);
+    if(sample_buffer_idx == (sample_buffer_depth - 1)){
+      pressure_ready = true;
+    }
   }
 }
 
@@ -5725,6 +5911,47 @@ boolean publishCO(){
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
+boolean publishPressure(){
+  clearTempBuffers();
+  uint16_t num_samples = pressure_ready ? sample_buffer_depth : sample_buffer_idx;
+  float pressure_moving_average = calculateAverage(&(sample_buffer[PRESSURE_SAMPLE_BUFFER][0]), num_samples);
+  pressure_pa = pressure_moving_average;
+
+  safe_dtostrf(pressure_pa, -8, 1, converted_value_string, 16);
+  trim_string(converted_value_string);
+  replace_nan_with_null(converted_value_string);
+
+  safe_dtostrf(instant_altitude_m, -8, 1, compensated_value_string, 16);
+  trim_string(compensated_value_string);
+  replace_nan_with_null(compensated_value_string);
+  
+  snprintf(scratch, SCRATCH_BUFFER_SIZE-1,
+    "{"
+    "\"serial-number\":\"%s\","
+    "\"pressure-units\":\"Pa\","
+    "\"pressure\":%s,"
+    "\"altitude-units\":\"m\","
+    "\"altitude\":%s,"    
+    "\"sensor-part-number\":\"BMP280\""
+    "%s"
+    "}",
+    mqtt_client_id,    
+    converted_value_string,
+    compensated_value_string,
+    gps_mqtt_string);
+
+  replace_character(scratch, '\'', '\"'); // replace single quotes with double quotes
+
+  strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
+  strcat(MQTT_TOPIC_STRING, "pressure");
+  if(mqtt_suffix_enabled){
+    strcat(MQTT_TOPIC_STRING, "/");
+    strcat(MQTT_TOPIC_STRING, mqtt_client_id);
+  }
+  return mqttPublish(MQTT_TOPIC_STRING, scratch);
+}
+
+
 void petWatchdog(void){
   tinywdt.pet();
 }
@@ -5734,19 +5961,28 @@ void delayForWatchdog(void){
 }
 
 void watchdogForceReset(void){
+  Serial.println(F("Info: Attempting Watchdog Forced Restart."));
+  setLCD_P(PSTR("   ATTEMPTING   "
+                "  FORCED RESET  "));
+  backlightOn();
+  ERROR_MESSAGE_DELAY();
+  
   tinywdt.force_reset();
   Serial.println(F("Error: Watchdog Force Restart failed. Manual reset is required."));
   setLCD_P(PSTR("AUTORESET FAILED"
                 " RESET REQUIRED "));
   backlightOn();
   ERROR_MESSAGE_DELAY();
+  
   for(;;){
+    soft_restart();
     delay(1000);
   }
 }
 
 void watchdogInitialize(void){
   tinywdt.begin(100, 65000);
+  delay(50);
 }
 
 // modal operation loop functions
@@ -5770,11 +6006,6 @@ void loop_wifi_mqtt_mode(void){
       num_mqtt_intervals_without_wifi = 0;
 
       if(mqttReconnect()){
-        clearLCD();
-        updateLCD("TEMP ", 0, 0, 5, false);
-        updateLCD("RH ", 10, 0, 3, false);
-        updateLCD("NO2 ", 0, 1, 4, false);
-        updateLCD("CO ", 10, 1, 3, false);
 
         //connected to MQTT server and connected to Wi-Fi network
         num_mqtt_connect_retries = 0;
@@ -5788,57 +6019,25 @@ void loop_wifi_mqtt_mode(void){
           if(temperature_ready || (sample_buffer_idx > 0)){
             if(!publishTemperature()){
               Serial.println(F("Error: Failed to publish Temperature."));
-            }
-            else{
-              float reported_temperature = temperature_degc - reported_temperature_offset_degC;
-              if(temperature_units == 'F'){
-                reported_temperature = toFahrenheit(reported_temperature);
-              }
-              updateLCD(reported_temperature, 5, 0, 3, false);
-            }
+            }           
           }
-          else{
-            updateLCD("---", 5, 0, 3, false);
-          }
-        }
-        else{
-          // sht25 is not ok
-          updateLCD("XXX", 5, 0, 3, false);
         }
 
         if(init_sht25_ok){
           if(humidity_ready || (sample_buffer_idx > 0)){
             if(!publishHumidity()){
               Serial.println(F("Error: Failed to publish Humidity."));
-            }
-            else{
-              float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
-              updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
-            }
-          }
-          else{
-            updateLCD("---", 13, 0, 3, false);
+            }           
           }
         }
-        else{
-          updateLCD("XXX", 13, 0, 3, false);
-        }
+
 
         if(init_no2_afe_ok && init_no2_adc_ok){
           if(no2_ready || (sample_buffer_idx > 0)){
             if(!publishNO2()){
               Serial.println(F("Error: Failed to publish NO2."));
             }
-            else{
-              updateLCD(no2_ppb, 5, 1, 3, false);
-            }
           }
-          else{
-            updateLCD("---", 5, 1, 3, false);
-          }
-        }
-        else{
-          updateLCD("XXX", 5, 1, 3, false);
         }
 
         if(init_co_afe_ok && init_co_adc_ok){
@@ -5846,19 +6045,15 @@ void loop_wifi_mqtt_mode(void){
             if(!publishCO()){
               Serial.println(F("Error: Failed to publish CO."));
             }
-            else{
-              updateLCD(co_ppm, 13, 1, 3, false);
-            }
           }
-          else{
-            updateLCD("---", 13, 1, 3, false);
-          }
-        }
-        else{
-          updateLCD("XXX", 13, 1, 3, false);
         }
 
-        repaintLCD();
+        if(init_bmp280_ok && (pressure_ready || (sample_buffer_idx > 0))){
+          if(!publishPressure()){
+            Serial.println(F("Error: Failed to publish Pressure."));
+          }
+        }        
+
       }
       else{
         // not connected to MQTT server
@@ -6035,6 +6230,23 @@ void printCsvDataLine(){
   Serial.print(co_moving_average, 6);
   appendToString(co_moving_average, 6, dataString, &dataStringRemaining);
 
+  Serial.print(F(","));
+  appendToString("," , dataString, &dataStringRemaining);  
+
+  float pressure_moving_average = 0.0f;
+  num_samples = pressure_ready ? sample_buffer_depth : sample_buffer_idx;
+  if(pressure_ready || (sample_buffer_idx > 0)){    
+    pressure_moving_average = calculateAverage(&(sample_buffer[PRESSURE_SAMPLE_BUFFER][0]), num_samples);    
+    pressure_pa = pressure_moving_average;
+
+    Serial.print(pressure_moving_average, 1);
+    appendToString(pressure_moving_average, 1, dataString, &dataStringRemaining);
+  }
+  else{
+    Serial.print(F("---"));
+    appendToString("---", dataString, &dataStringRemaining);
+  }
+
   Serial.print(gps_csv_string);
   appendToString(gps_csv_string, dataString, &dataStringRemaining);
 
@@ -6043,7 +6255,8 @@ void printCsvDataLine(){
 
   boolean sdcard_write_succeeded = true;
   char filename[16] = {0};
-  if(init_sdcard_ok){
+//  if(init_sdcard_ok){
+  if (SD.begin(16)) {    
     getNowFilename(filename, 15);
     File dataFile = SD.open(filename, FILE_WRITE);          
     if(dataFile) {      
@@ -6057,59 +6270,10 @@ void printCsvDataLine(){
 
   if(mode == SUBMODE_OFFLINE){
     if(((call_counter % 10) == 0) && sdcard_write_succeeded){ // once every 10 reports    
-      clearLCD(false);    
-      if(init_sdcard_ok){
-        setLCD_P(PSTR("  LOGGING DATA  "
-                      "   TO SD CARD   "));     
-      }
-      else{ // if(!init_sdcard_ok)
-        setLCD_P(PSTR("  LOGGING DATA  "
-                      "  TO USB-SERIAL "));
-      }    
-      repaintLCD();    
+      display_offline_mode_banner = true; 
     }
     else if(sdcard_write_succeeded){ // otherwise display the data (implied, or no sd card installed)
-      clearLCD(false);
-      updateLCD("TEMP ", 0, 0, 5, false);
-      updateLCD("RH ", 10, 0, 3, false);
-      updateLCD("NO2 ", 0, 1, 4, false);
-      updateLCD("CO ", 10, 1, 3, false);
-  
-      if(init_sht25_ok){
-        float reported_temperature = temperature_degc - reported_temperature_offset_degC;
-        if(temperature_units == 'F'){
-          reported_temperature = toFahrenheit(reported_temperature);
-        }
-        updateLCD(reported_temperature, 5, 0, 3, false);
-      }
-      else{
-        // sht25 is not ok
-        updateLCD("XXX", 5, 0, 3, false);
-      }
-  
-      if(init_sht25_ok){
-        float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
-        updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
-      }
-      else{
-        updateLCD("XXX", 13, 0, 3, false);
-      }
-  
-      if(init_no2_afe_ok && init_no2_adc_ok){
-        updateLCD(no2_ppb, 5, 1, 3, false);
-      }
-      else{
-        updateLCD("XXX", 5, 1, 3, false);
-      }
-  
-      if(init_co_afe_ok && init_co_adc_ok){
-        updateLCD(co_ppm, 13, 1, 3, false);
-      }
-      else{
-        updateLCD("XXX", 13, 1, 3, false);
-      }
-  
-      repaintLCD();
+      display_offline_mode_banner = false;     
     }    
     else { // if( !sdcard_write_succeeded )
       Serial.print("Error: Failed to open SD card file named \"");
@@ -6262,7 +6426,7 @@ void downloadFile(char * hostname, uint16_t port, char * filename, void (*respon
   */
   esp.connect(hostname, port);
   if (esp.connected()) {
-    memset(scratch, 0, 512);
+    memset(scratch, 0, SCRATCH_BUFFER_SIZE);
     snprintf(scratch, SCRATCH_BUFFER_SIZE-1, "GET /%s HTTP/1.1\r\nHost: %s\r\n\r\n\r\n", filename, hostname);
     esp.print(scratch);
     //Serial.print(scratch);
@@ -7336,3 +7500,97 @@ boolean parseConfigurationMessageBody(char * body){
 
   return found_exit;
 }
+
+void checkForESPFirmwareUpdates(){
+  // the firmware version should be at least 1.5.0.0 = 01 50 00 00
+  uint32_t version_int = 0;
+  if(esp.getVersion(&version_int)){
+    Serial.print(F("Info: Current ESP8266 Firmware Version is "));
+    Serial.println(version_int);
+    if(version_int >= 1050000UL){
+      Serial.println(F("Info: ESP8266 Firmware Version is up to date"));
+    }
+    else {
+      Serial.println(F("Info: ESP8266 Firmware Update required..."));
+      doESP8266Update();
+    }
+  }
+  else{
+    Serial.println(F("Error: Failed to get ESP8266 firmware version"));
+  }  
+}
+
+void doESP8266Update(){
+   boolean timeout = false;
+   boolean gotOK = false;
+
+   int32_t timeout_interval =  300000; // 5 minutes
+
+   setLCD_P(PSTR("   PERFORMING   "
+                 "   ESP UPDATES  "));
+                 
+   Serial.print(F("Info: Starting ESP8266 Firmware Update..."));
+   if(esp.firmwareUpdateBegin()){
+     // Serial.println(F("OK"));
+     uint8_t status = 0xff;
+     uint32_t previousMillis = millis();
+     while(esp.firmwareUpdateStatus(&status) && !timeout){
+       // Serial.print(F("Info: Pet watchdog @ "));
+       // Serial.println(millis());
+       petWatchdog();
+       delayForWatchdog();
+
+       if(status == 2){
+         gotOK = true;
+         // Serial.println(F("ESP8266 returned OK."));
+       }
+       else if(status == 3){
+         if(gotOK){
+           Serial.println(F("Done."));
+           break; // break out of the loop and perform a reboot
+         }
+         else{
+           Serial.println(F("Unexpected Error."));
+           Serial.println(F("Warning: ESP8266 Reset occurred before receiving OK."));
+           return;
+         }
+       }
+
+       if(status != 0xff){
+         previousMillis =  current_millis; // reset timeout on state change
+         // Serial.print("ESP8266 Status Changed to ");
+         // Serial.println(status);
+         status = 0xff;
+       }
+
+       current_millis = millis();
+       if(current_millis - previousMillis >= timeout_interval){
+          timeout = true;
+       }
+     }
+     if(timeout){
+       Serial.println(F("Timeout Error."));
+       return;
+     }
+     else if(status == 1){
+       Serial.println(F("Unknown Error."));
+       return;
+     }
+   }
+   else {
+     Serial.println(F("Failed."));     
+     return;
+   }
+   
+   Serial.print(F("Info: ESP8266 restoring defaults..."));
+   if(esp.restoreDefault()){
+     Serial.println(F("OK."));
+   }
+   else{
+     Serial.println(F("Failed."));
+   }
+
+   Serial.flush();
+   watchdogForceReset();
+}
+
