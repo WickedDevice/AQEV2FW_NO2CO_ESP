@@ -5151,7 +5151,6 @@ void clearTempBuffers(void){
   memset(compensated_value_string, 0, 64);
   memset(raw_instant_value_string, 0, 64);
   memset(raw_value_string, 0, 64);
-  memset(raw_instant_value_string, 0, 64);
   memset(scratch, 0, SCRATCH_BUFFER_SIZE);
   scratch_idx = 0;
   memset(MQTT_TOPIC_STRING, 0, 128);
