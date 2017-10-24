@@ -228,6 +228,8 @@ uint8_t mode = MODE_OPERATIONAL;
 #define EEPROM_USER_LOCATION_EN   (EEPROM_USER_LONGITUDE_DEG - 1)        // 1 means user location supercedes GPS location, anything else means GPS or bust
 #define EEPROM_2_2_0_SAMPLING_UPD (EEPROM_USER_LOCATION_EN - 1)          // 1 means to sampling parameter default changes have been applied
 #define EEPROM_DISABLE_SOFTAP     (EEPROM_2_2_0_SAMPLING_UPD - 1)        // 1 means to disable softap behavior
+#define EEPROM_NO2_ZERO_NEGATIVE_RESULTS (EEPROM_DISABLE_SOFTAP - 1)
+#define EEPROM_CO_ZERO_NEGATIVE_RESULTS (EEPROM_NO2_ZERO_NEGATIVE_RESULTS - 1)
 //  /\
 //   L Add values up here by subtracting offsets to previously added values
 //   * ... and make sure the addresses don't collide and start overlapping!
@@ -319,6 +321,8 @@ void set_user_latitude(char * arg);
 void set_user_longitude(char * arg);
 void set_user_location_enable(char * arg);
 void set_softap_enable(char * arg);
+void no2_negz(char * arg);
+void co_negz(char * arg);
 
 // Note to self:
 //   When implementing a new parameter, ask yourself:
@@ -385,6 +389,8 @@ const char cmd_string_usr_lat[] PROGMEM     = "latitude   ";
 const char cmd_string_usr_lng[] PROGMEM     = "longitude  ";
 const char cmd_string_usr_loc_en[] PROGMEM  = "location   ";
 const char cmd_string_softap_en[] PROGMEM   = "softap     ";
+const char cmd_string_no2_negz[] PROGMEM    = "no2_negz   ";
+const char cmd_string_co_negz[] PROGMEM     = "co_negz   ";
 const char cmd_string_null[] PROGMEM        = "";
 
 PGM_P const commands[] PROGMEM = {
@@ -436,6 +442,8 @@ PGM_P const commands[] PROGMEM = {
   cmd_string_usr_lng,
   cmd_string_usr_loc_en,
   cmd_string_softap_en,
+  cmd_string_no2_negz,
+  cmd_string_co_negz,
   cmd_string_null
 };
 
@@ -488,6 +496,8 @@ void (*command_functions[])(char * arg) = {
   set_user_longitude,
   set_user_location_enable,
   set_softap_enable,
+  no2_negz,
+  co_negz,
   0
 };
 
@@ -2196,6 +2206,12 @@ void print_eeprom_value(char * arg) {
   else if (strncmp(arg, "co_off", 6) == 0) {
     print_eeprom_float((const float *) EEPROM_CO_CAL_OFFSET);
   }
+  else if (strncmp(arg, "no2_negz", 8) == 0) {
+    Serial.println(eeprom_read_byte((const uint8_t *) EEPROM_NO2_ZERO_NEGATIVE_RESULTS));
+  }      
+  else if (strncmp(arg, "co_negz", 7) == 0) {
+    Serial.println(eeprom_read_byte((const uint8_t *) EEPROM_CO_ZERO_NEGATIVE_RESULTS));
+  }          
   else if (strncmp(arg, "temp_off", 8) == 0) {
     print_eeprom_float((const float *) EEPROM_TEMPERATURE_OFFSET);
   }
@@ -2480,6 +2496,8 @@ void restore(char * arg) {
     configInject("restore key\r");
     configInject("restore no2\r");
     configInject("restore co\r");
+    configInject("no2_negz 1\r");
+    configInject("co_negz 1\r");
     configInject("restore mac\r");
 
     // copy the MQTT ID to the MQTT Username
@@ -3931,6 +3949,34 @@ void set_no2_slope(char * arg) {
 
 void set_no2_offset(char * arg) {
   set_float_param(arg, (float *) EEPROM_NO2_CAL_OFFSET, 0);
+}
+
+void no2_negz(char * arg){
+  if(!configMemoryUnlocked(__LINE__)){
+    return;
+  }
+  
+  if(strcmp(arg, "0") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_NO2_ZERO_NEGATIVE_RESULTS, 0);
+  }
+  else{
+    eeprom_write_byte((uint8_t *) EEPROM_NO2_ZERO_NEGATIVE_RESULTS, 1);
+  }
+  recomputeAndStoreConfigChecksum();
+}
+
+void co_negz(char * arg){
+  if(!configMemoryUnlocked(__LINE__)){
+    return;
+  }
+  
+  if(strcmp(arg, "0") == 0){
+    eeprom_write_byte((uint8_t *) EEPROM_CO_ZERO_NEGATIVE_RESULTS, 0);
+  }
+  else{
+    eeprom_write_byte((uint8_t *) EEPROM_CO_ZERO_NEGATIVE_RESULTS, 1);
+  }
+  recomputeAndStoreConfigChecksum();
 }
 
 void set_reported_temperature_offset(char * arg) {
@@ -5595,12 +5641,15 @@ void no2_convert_from_volts_to_ppb(float volts, float * converted_value, float *
   static boolean first_access = true;
   static float no2_zero_volts = 0.0f;
   static float no2_slope_ppb_per_volt = 0.0f;
+  static boolean no2_report_neg_as_zero = true;
+  
   float temperature_coefficient_of_span = 0.0f;
   float temperature_compensated_slope = 0.0f;
   if(first_access){
     // NO2 has negative slope in circuit, more negative voltages correspond to higher levels of NO2
     no2_slope_ppb_per_volt = eeprom_read_float((const float *) EEPROM_NO2_CAL_SLOPE);
     no2_zero_volts = eeprom_read_float((const float *) EEPROM_NO2_CAL_OFFSET);
+    no2_report_neg_as_zero = eeprom_read_byte((const uint8_t *) EEPROM_NO2_ZERO_NEGATIVE_RESULTS) ? true : false;    
     first_access = false;
   }
 
@@ -5697,7 +5746,7 @@ void no2_convert_from_volts_to_ppb(float volts, float * converted_value, float *
                                      / signal_scaling_factor_at_altitude;
   }
 
-  if(*temperature_compensated_value <= 0.0f){
+  if(no2_report_neg_as_zero && (*temperature_compensated_value <= 0.0f)){
     *temperature_compensated_value = 0.0f;
   }
 }
@@ -5758,12 +5807,14 @@ void co_convert_from_volts_to_ppm(float volts, float * converted_value, float * 
   static boolean first_access = true;
   static float co_zero_volts = 0.0f;
   static float co_slope_ppm_per_volt = 0.0f;
+  static boolean co_report_neg_as_zero = true;
   float temperature_coefficient_of_span = 0.0f;
   float temperature_compensated_slope = 0.0f;
   if(first_access){
     // CO has positive slope in circuit, more positive voltages correspond to higher levels of CO
     co_slope_ppm_per_volt = eeprom_read_float((const float *) EEPROM_CO_CAL_SLOPE);
     co_zero_volts = eeprom_read_float((const float *) EEPROM_CO_CAL_OFFSET);
+    co_report_neg_as_zero = eeprom_read_byte((const uint8_t *) EEPROM_CO_ZERO_NEGATIVE_RESULTS) ? true : false;    
     first_access = false;
   }
 
@@ -5853,7 +5904,7 @@ void co_convert_from_volts_to_ppm(float volts, float * converted_value, float * 
                                      / signal_scaling_factor_at_altitude;
   }
 
-  if(*temperature_compensated_value <= 0.0f){
+  if(co_report_neg_as_zero && (*temperature_compensated_value <= 0.0f)){
     *temperature_compensated_value = 0.0f;
   }
 }
