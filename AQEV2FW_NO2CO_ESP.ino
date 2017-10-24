@@ -752,6 +752,8 @@ void setup() {
     delayForWatchdog();
 
     while((mode == MODE_CONFIG) || ((mode_requires_wifi(target_mode) && !valid_ssid_passed))) {
+      mode = MODE_CONFIG; // fix for invalid ssid in normal mode and typing exist causing spin state
+      
       allowed_to_write_config_eeprom = true;
       const uint32_t idle_timeout_period_ms = 1000UL * 60UL * 5UL; // 5 minutes
       uint32_t idle_time_ms = 0;
