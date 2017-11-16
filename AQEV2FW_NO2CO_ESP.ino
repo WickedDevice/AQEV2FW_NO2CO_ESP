@@ -566,8 +566,7 @@ void setup() {
   boolean valid_ssid_passed = false;
 
   // initialize hardware
-  initializeHardware();
-  resumeGpsProcessing();
+  initializeHardware();  
   
   //  uint8_t tmp[EEPROM_CONFIG_MEMORY_SIZE] = {0};
   //  get_eeprom_config(tmp);
@@ -749,7 +748,7 @@ void setup() {
       }
     }
 
-
+    resumeGpsProcessing();
     Serial.println();
     delayForWatchdog();
 
