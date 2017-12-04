@@ -1118,7 +1118,7 @@ void loop() {
 
   if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval){    
     previous_touch_sampling_millis = current_millis;
-    if(!gps_installed){
+    if(!gps_installed || user_location_override){
       collectTouch();
     }
     processTouchQuietly();
