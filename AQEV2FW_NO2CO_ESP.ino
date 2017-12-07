@@ -391,7 +391,7 @@ const char cmd_string_usr_lng[] PROGMEM     = "longitude  ";
 const char cmd_string_usr_loc_en[] PROGMEM  = "location   ";
 const char cmd_string_softap_en[] PROGMEM   = "softap     ";
 const char cmd_string_no2_negz[] PROGMEM    = "no2_negz   ";
-const char cmd_string_co_negz[] PROGMEM     = "co_negz   ";
+const char cmd_string_co_negz[] PROGMEM     = "co_negz    ";
 const char cmd_string_null[] PROGMEM        = "";
 
 PGM_P const commands[] PROGMEM = {
@@ -6027,7 +6027,6 @@ boolean publishPressure(){
   return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
-
 void petWatchdog(void){
   tinywdt.pet();
 }
@@ -6111,7 +6110,6 @@ void loop_wifi_mqtt_mode(void){
             }           
           }
         }
-
 
         if(init_no2_afe_ok && init_no2_adc_ok){
           if(no2_ready || (sample_buffer_idx > 0)){
