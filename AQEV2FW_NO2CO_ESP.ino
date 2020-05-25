@@ -30,7 +30,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 3
-#define AQEV2FW_PATCH_VERSION 3
+#define AQEV2FW_PATCH_VERSION 7
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -189,6 +189,7 @@ typedef struct {
     // to calculate the baseline voltage
 } baseline_voltage_t;
 baseline_voltage_t baseline_voltage_struct; // scratch space for a single baseline_voltage_t entry
+boolean valid_temperature_characterization_struct(baseline_voltage_t * temperature_characterization_struct_p) __attribute__((weak));
 
 #define BACKLIGHT_OFF_AT_STARTUP (0)
 #define BACKLIGHT_ON_AT_STARTUP  (1)
@@ -653,6 +654,8 @@ const char * header_row = "Timestamp,"
                           "Longitude[deg],"
                           "Altitude[m]";
 
+static boolean wdt_reset_pending = false;
+
 void setup() {
     boolean integrity_check_passed = false;
     boolean mirrored_config_mismatch = false;
@@ -719,6 +722,18 @@ void setup() {
     initializeNewConfigSettings();
     user_location_override = (eeprom_read_byte((const uint8_t *) EEPROM_USER_LOCATION_EN) == 1) ? true : false;
     uint8_t target_mode = eeprom_read_byte((const uint8_t *) EEPROM_OPERATIONAL_MODE);
+
+    // get the temperature units
+    temperature_units = eeprom_read_byte((const uint8_t *) EEPROM_TEMPERATURE_UNITS);
+    if((temperature_units != 'C') && (temperature_units != 'F')) {
+        temperature_units = 'C';
+    }
+
+    // get the sampling, reporting, and averaging parameters
+    sampling_interval = eeprom_read_word((uint16_t * ) EEPROM_SAMPLING_INTERVAL) * 1000L;
+    reporting_interval = eeprom_read_word((uint16_t * ) EEPROM_REPORTING_INTERVAL) * 1000L;
+    sample_buffer_depth = (uint16_t) ((((uint32_t) eeprom_read_word((uint16_t * ) EEPROM_AVERAGING_INTERVAL)) * 1000L) / sampling_interval);
+
 
     // config mode processing loop
     do {
@@ -984,7 +999,9 @@ void setup() {
             // but this additional report should be harmless at any rate
             Serial.println(F("Error: Failed to connect to configured network. Rebooting."));
             Serial.flush();
-            watchdogForceReset();
+            // watchdogForceReset();
+            wdt_reset_pending = true;
+            return;
         }
         delayForWatchdog();
         petWatchdog();
@@ -1026,7 +1043,9 @@ void setup() {
                 ERROR_MESSAGE_DELAY();
                 Serial.println(F("Error: Unable to connect to MQTT server"));
                 Serial.flush();
-                watchdogForceReset();
+                // watchdogForceReset();
+                wdt_reset_pending = true;
+                return;
             }
             delayForWatchdog();
             petWatchdog();
@@ -1132,7 +1151,7 @@ void updateDisplayedSensors() {
 
             if(init_sht25_ok) {
                 if(humidity_ready || (sample_buffer_idx > 0)) {
-                    float reported_relative_humidity_percent = relative_humidity_percent - reported_humidity_offset_percent;
+                    float reported_relative_humidity_percent = constrain(relative_humidity_percent - reported_humidity_offset_percent, 0.0f, 100.0f);
                     updateLCD(reported_relative_humidity_percent, 13, 0, 3, false);
                 }
                 else {
@@ -1209,11 +1228,10 @@ void loop() {
     }
 
     if(first) {
-        first = false;
         updateGpsStrings();
     }
 
-    if(current_millis - previous_sensor_sampling_millis >= sampling_interval) {
+    if(first || (current_millis - previous_sensor_sampling_millis >= sampling_interval)) {
         suspendGpsProcessing();
         previous_sensor_sampling_millis = current_millis;
         //Serial.print(F("Info: Sampling Sensors @ "));
@@ -1226,7 +1244,7 @@ void loop() {
         advanceSampleBufferIndex();
     }
 
-    if(current_millis - previous_touch_sampling_millis >= touch_sampling_interval) {
+    if(first || (current_millis - previous_touch_sampling_millis >= touch_sampling_interval)) {
         previous_touch_sampling_millis = current_millis;
         if(!gps_installed || user_location_override) {
             collectTouch();
@@ -1234,17 +1252,24 @@ void loop() {
         processTouchQuietly();
     }
 
+
     // the following loop routines *must* return reasonably frequently
     // so that the watchdog timer is serviced
-    switch(mode) {
-    case SUBMODE_NORMAL:
-        loop_wifi_mqtt_mode();
-        break;
-    case SUBMODE_OFFLINE:
-        loop_offline_mode();
-        break;
-    default: // unkown operating mode, nothing to be done
-        break;
+    if (first) {
+        printCsvDataLine();
+    }
+
+    if (!wdt_reset_pending) {
+        switch(mode) {
+        case SUBMODE_NORMAL:
+            loop_wifi_mqtt_mode();
+            break;
+        case SUBMODE_OFFLINE:
+            loop_offline_mode();
+            break;
+        default: // unkown operating mode, nothing to be done
+            break;
+        }
     }
 
     // pet the watchdog
@@ -1260,6 +1285,11 @@ void loop() {
     }
 
     updateDisplayedSensors();
+    first = false;
+
+    if (wdt_reset_pending) {
+        watchdogForceReset();
+    }
 }
 
 /****** INITIALIZATION SUPPORT FUNCTIONS ******/
@@ -3458,7 +3488,17 @@ void force_command(char * arg) {
     }
 }
 
-void printDirectory(File dir, int numTabs) {
+boolean isSameOrAfter(char *ref, char *b) {
+    // should return true if ref is <= ref lexically
+    return strncmp(ref, b, 8) <= 0;
+}
+
+boolean isSameOrBefore(char *ref, char *b) {
+    // should return true if ref is >= ref lexically
+    return strncmp(ref, b, 8) >= 0;
+}
+
+void printDirectory(File dir, int numTabs, char * start = NULL, char * end = NULL) {
     for(;;) {
         File entry =  dir.openNextFile();
         if (! entry) {
@@ -3469,6 +3509,12 @@ void printDirectory(File dir, int numTabs) {
         char tmp[16] = {0};
         entry.getName(tmp, 16);
         if(tmp[0] != '.') {
+            if (!entry.isDirectory() && start && end) {
+                if(!isSameOrAfter(start, tmp) || !isSameOrBefore(end, tmp)) {
+                    continue;
+                }
+            }
+
             Serial.print(tmp);
 
             for (uint8_t i=0; i<numTabs; i++) {
@@ -3476,7 +3522,7 @@ void printDirectory(File dir, int numTabs) {
             }
             if (entry.isDirectory()) {
                 Serial.println(F("/"));
-                printDirectory(entry, numTabs+1);
+                printDirectory(entry, numTabs+1, start, end);
             } else {
                 // files have sizes, directories do not
                 Serial.print(F("\t"));
@@ -3485,6 +3531,12 @@ void printDirectory(File dir, int numTabs) {
             }
         }
         entry.close();
+    }
+}
+
+void list_one_file(char * filename) {
+    if (SD.exists(filename)) {
+        Serial.println(filename);
     }
 }
 
@@ -3499,10 +3551,26 @@ void list_command(char * arg) {
             Serial.println(F("Error: SD Card is not initialized, can't list files."));
         }
     }
-    else {
-        Serial.print(F("Error: Invalid parameter provided to 'list' command - \""));
-        Serial.print(arg);
-        Serial.println(F("\""));
+    else { // otherwise treat it as a date range request
+        // Serial.print(F("Error: Invalid parameter provided to 'list' command - \""));
+        // Serial.print(arg);
+        // Serial.println(F("\""));
+        // fileop_command_delegate(arg, list_one_file);
+        char *first_arg = NULL;
+        char *second_arg = NULL;
+
+        trim_string(arg);
+
+        first_arg = strtok(arg, " ");
+        second_arg = strtok(NULL, " ");
+        if(init_sdcard_ok) {
+            File root = SD.open("/", FILE_READ);
+            printDirectory(root, 0, first_arg, second_arg);
+            root.close();
+        }
+        else {
+            Serial.println(F("Error: SD Card is not initialized, can't list files."));
+        }
     }
 }
 
@@ -3575,6 +3643,27 @@ void advanceByOneHour(uint8_t src_array[4]) {
     src_array[3] = tm.Hour;
 }
 
+int8_t compareCrackedDates(uint8_t * date1, uint8_t * date2) {
+    uint32_t d1 = 0;
+    uint32_t d2 = 0;
+    for(int8_t ii = 0; ii < 4; ii++) {
+        d1 |= date1[ii];
+        d2 |= date2[ii];
+        if (ii != 3) {
+            d1 <<= 8;
+            d2 <<= 8;
+        }
+    }
+
+    int8_t ret = (d1 == d2) ? 0 : ( (d1 > d2) ? 1 : -1);
+
+    // Serial.println(d1, HEX);
+    // Serial.println(d2, HEX);
+    // Serial.println(ret);
+
+    return ret;
+}
+
 // does the behavior of executing the one_file_function on a single file
 // or on each file in a range of files
 void fileop_command_delegate(char *arg, void (*one_file_function)(char *))
@@ -3619,7 +3708,7 @@ void fileop_command_delegate(char *arg, void (*one_file_function)(char *))
                 one_file_function(cur_date_filename);
             }
 
-            if (memcmp(cur_date, end_date, 4) == 0)
+            if ( compareCrackedDates(end_date, cur_date) <= 0 )
             {
                 finished_last_file = true;
             }
@@ -5708,14 +5797,16 @@ void reconnectToAccessPoint(void) {
         delayForWatchdog();
         petWatchdog();
 
-        if(!esp.connectToNetwork((char *) ssid, (char *) network_password)) {
+        if(!esp.connectToNetwork((char *) ssid, (char *) network_password, 30000)) {
             Serial.print(F("Error: Failed to connect to Access Point with SSID: "));
             Serial.println(ssid);
             Serial.flush();
             updateLCD("FAILED", 1);
             lcdFrownie(15, 1);
             ERROR_MESSAGE_DELAY();
-            watchdogForceReset();
+            // watchdogForceReset();
+            wdt_reset_pending = true;
+            return;
         }
 
         // if your configured for static ip address then setStaticIP
@@ -5769,7 +5860,9 @@ void acquireIpAddress(void) {
             updateLCD("FAILED", 1);
             lcdFrownie(15, 1);
             ERROR_MESSAGE_DELAY();
-            watchdogForceReset();
+            // watchdogForceReset();
+            wdt_reset_pending = true;
+            return;
         }
     }
     else {
@@ -6328,7 +6421,10 @@ void loop_wifi_mqtt_mode(void) {
 
     if(first || (current_millis - previous_mqtt_publish_millis >= reporting_interval)) {
         previous_mqtt_publish_millis = current_millis;
-        printCsvDataLine();
+
+        if (!first) { // the first time it happens in the main loop
+            printCsvDataLine();
+        }
 
         if(connectedToNetwork()) {
             num_mqtt_intervals_without_wifi = 0;
@@ -6411,7 +6507,9 @@ void loop_wifi_mqtt_mode(void) {
                                   "    FAILURE     "));
                     lcdFrownie(15, 1);
                     ERROR_MESSAGE_DELAY();
-                    watchdogForceReset();
+                    // watchdogForceReset();
+                    wdt_reset_pending = true;
+                    return;
                 }
             }
         }
@@ -6432,7 +6530,9 @@ void loop_wifi_mqtt_mode(void) {
                               "    FAILURE     "));
                 lcdFrownie(15, 1);
                 ERROR_MESSAGE_DELAY();
-                watchdogForceReset();
+                // watchdogForceReset();
+                wdt_reset_pending = true;
+                return true;
             }
 
             restartWifi();
@@ -6445,6 +6545,7 @@ void loop_wifi_mqtt_mode(void) {
     }
 
     first = false;
+
 }
 
 void loop_offline_mode(void) {
@@ -6453,11 +6554,13 @@ void loop_offline_mode(void) {
     static unsigned long previous_write_record_millis = 0;
     static boolean first = true;
 
-    if(first || (current_millis - previous_write_record_millis >= reporting_interval)) {
-        first = false;
+    if((current_millis - previous_write_record_millis >= reporting_interval)) {
         previous_write_record_millis = current_millis;
-        printCsvDataLine();
+        if (!first) { // first time happens in main loop
+            printCsvDataLine();
+        }
     }
+    first = false;
 }
 
 /****** SIGNAL PROCESSING MATH SUPPORT FUNCTIONS ******/
@@ -6512,7 +6615,7 @@ void printCsvDataLine() {
 
     if(init_sht25_ok && (humidity_ready || (sample_buffer_idx > 0))) {
         relative_humidity_percent = instant_humidity_percent;
-        float reported_relative_humidity = relative_humidity_percent - reported_humidity_offset_percent;
+        float reported_relative_humidity = constrain(relative_humidity_percent - reported_humidity_offset_percent, 0.0f, 100.0f);
         Serial.print(reported_relative_humidity, 2);
         appendToString(reported_relative_humidity, 2, dataString, &dataStringRemaining);
     }
@@ -6540,7 +6643,7 @@ void printCsvDataLine() {
     }
 
     Serial.print(F(","));
-    appendToString("," , dataString, &dataStringRemaining);
+    appendToString(",", dataString, &dataStringRemaining);
 
     float co_moving_average = 0.0f;
     num_samples = co_ready ? sample_buffer_depth : sample_buffer_idx;
@@ -6558,20 +6661,20 @@ void printCsvDataLine() {
     }
 
     Serial.print(F(","));
-    appendToString("," , dataString, &dataStringRemaining);
+    appendToString(",", dataString, &dataStringRemaining);
 
     Serial.print(no2_moving_average, 6);
     appendToString(no2_moving_average, 6, dataString, &dataStringRemaining);
 
     Serial.print(F(","));
-    appendToString("," , dataString, &dataStringRemaining);
+    appendToString(",", dataString, &dataStringRemaining);
 
 
     Serial.print(co_moving_average, 6);
     appendToString(co_moving_average, 6, dataString, &dataStringRemaining);
 
     Serial.print(F(","));
-    appendToString("," , dataString, &dataStringRemaining);
+    appendToString(",", dataString, &dataStringRemaining);
 
 
 
@@ -7584,7 +7687,7 @@ boolean parseConfigurationMessageBody(char * body) {
             set_network_password(pwd);
             set_network_security_mode("auto");
 
-            if(esp.connectToNetwork((char *) ssid, (char *) pwd, 45000)) {
+            if(esp.connectToNetwork((char *) ssid, (char *) pwd, 30000)) {
                 Serial.print(F("Info: Successfully connected to Network \""));
                 Serial.print(ssid);
                 Serial.print(F("\""));
